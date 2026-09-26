@@ -1,0 +1,78 @@
+﻿/*============================================================================
+* modem_component_config.h —— 可移植 4G 组件编译期配置
+* 层次定位：Component 层；仅使用标准 C，不依赖 HAL/QP/RTOS。
+*
+* NOTE：本文件是工程配置到可移植组件命名空间的唯一映射点。移植到别的工程时
+*       删掉下面的 #include "app_config.h" 并直接给右侧组件宏赋值即可，不需要
+*       改动 modem_component.c、modem_at.c 或任何 backend 源码。
+*===========================================================================*/
+#ifndef MODEM_COMPONENT_CONFIG_H
+#define MODEM_COMPONENT_CONFIG_H
+
+#include "app_config.h"
+
+/* 芯片后端选择：编译期三选一，取值为下面三个宏之一。 */
+#define MODEM_BACKEND_MN316                APP_CFG_MODEM_BACKEND_MN316
+#define MODEM_BACKEND_NT26                 APP_CFG_MODEM_BACKEND_NT26
+#define MODEM_BACKEND_ML307C               APP_CFG_MODEM_BACKEND_ML307C
+#define MODEM_COMPONENT_BACKEND            APP_CFG_MODEM_BACKEND
+
+/* 缓冲容量：命令 / 应答 / 负载 / 主动通知 / 行 / 主题名 */
+#define MODEM_COMPONENT_COMMAND_MAX        APP_CFG_MODEM_COMMAND_SIZE
+#define MODEM_COMPONENT_RESPONSE_MAX       APP_CFG_MODEM_RESPONSE_SIZE
+#define MODEM_COMPONENT_PAYLOAD_MAX        APP_CFG_MODEM_PAYLOAD_SIZE
+#define MODEM_COMPONENT_URC_MAX            APP_CFG_MODEM_URC_SIZE
+#define MODEM_COMPONENT_LINE_MAX           APP_CFG_MODEM_LINE_SIZE
+#define MODEM_COMPONENT_TOPIC_MAX          APP_CFG_MODEM_TOPIC_SIZE
+#define MODEM_COMPONENT_CELL_FIELD_MAX     APP_CFG_MODEM_CELL_FIELD_SIZE
+#define MODEM_COMPONENT_TOKEN_MAX          APP_CFG_MODEM_TOKEN_SIZE
+#define MODEM_COMPONENT_RX_BUDGET          APP_CFG_MODEM_RX_BUDGET
+
+/* 时间参数：全部以毫秒给出，组件内不做阻塞等待，只做期限比较。 */
+#define MODEM_COMPONENT_TIMEOUT_MS         APP_CFG_MODEM_COMMAND_TIMEOUT_MS
+#define MODEM_COMPONENT_PROBE_TIMEOUT_MS   APP_CFG_MODEM_PROBE_TIMEOUT_MS
+#define MODEM_COMPONENT_AT_RETRY_MS        APP_CFG_MODEM_AT_RETRY_MS
+#define MODEM_COMPONENT_PROBE_ATTEMPTS     APP_CFG_MODEM_PROBE_ATTEMPTS
+#define MODEM_COMPONENT_POLL_INTERVAL_MS   APP_CFG_MODEM_POLL_INTERVAL_MS
+#define MODEM_COMPONENT_REG_POLL_MS        APP_CFG_MODEM_REG_POLL_MS
+#define MODEM_COMPONENT_SIM_WAIT_MS        APP_CFG_MODEM_SIM_WAIT_MS
+#define MODEM_COMPONENT_REG_TIMEOUT_MS     APP_CFG_MODEM_REGISTRATION_TIMEOUT_MS
+#define MODEM_COMPONENT_ATTACH_TIMEOUT_MS  APP_CFG_MODEM_ATTACH_TIMEOUT_MS
+#define MODEM_COMPONENT_CONFIG_TIMEOUT_MS  APP_CFG_MODEM_CONFIG_TIMEOUT_MS
+#define MODEM_COMPONENT_CHANNEL_TIMEOUT_MS APP_CFG_MODEM_CHANNEL_TIMEOUT_MS
+#define MODEM_COMPONENT_REBOOT_SETTLE_MS   APP_CFG_MODEM_REBOOT_SETTLE_MS
+#define MODEM_COMPONENT_MQTT_OPEN_TIMEOUT_MS  APP_CFG_MODEM_MQTT_OPEN_TIMEOUT_MS
+#define MODEM_COMPONENT_MQTT_STATE_TIMEOUT_MS APP_CFG_MODEM_MQTT_STATE_TIMEOUT_MS
+#define MODEM_COMPONENT_TOPIC_TIMEOUT_MS   APP_CFG_MODEM_TOPIC_TIMEOUT_MS
+/*! AT 探活的总预算：够把 PROBE_ATTEMPTS 次超时和它们之间的间隔都走完。 */
+#define MODEM_COMPONENT_PROBE_BUDGET_MS                                    \
+    (MODEM_COMPONENT_PROBE_ATTEMPTS *                                      \
+     (MODEM_COMPONENT_PROBE_TIMEOUT_MS + MODEM_COMPONENT_AT_RETRY_MS))
+
+/* 产品侧可写参数的取值范围；组件只做范围校验，不关心业务含义。 */
+#define MODEM_COMPONENT_SAMPLE_MIN         APP_CFG_MODEM_SAMPLE_INTERVAL_MIN
+#define MODEM_COMPONENT_SAMPLE_MAX         APP_CFG_MODEM_SAMPLE_INTERVAL_MAX
+#define MODEM_COMPONENT_REPORT_PERIOD_S    APP_CFG_MODEM_REPORT_PERIOD_S
+/*! 在线期查一次小区信息的周期（秒）；0 表示不主动刷新。 */
+#define MODEM_COMPONENT_CELL_PERIOD_S      APP_CFG_MODEM_CELL_REFRESH_PERIOD_S
+
+/*! 运行期上行的重试：连续失败几次才判链路失效、以及重试间隔（毫秒）。
+*  见 app_config.h 里这两个宏的 NOTE（2026-09-20 的「20 分钟后永久沉默」修复）。 */
+#define MODEM_COMPONENT_UPLINK_RETRY       APP_CFG_MODEM_UPLINK_RETRY
+#define MODEM_COMPONENT_UPLINK_RETRY_MS    APP_CFG_MODEM_UPLINK_RETRY_MS
+
+/*! 组件内部诊断开关；仍受 APP_CFG_LOG_ENABLE/LEVEL 二次过滤。 */
+#define MODEM_COMPONENT_TRACE_ENABLE       APP_CFG_MODEM_TRACE_ENABLE
+
+#if (MODEM_COMPONENT_TRACE_ENABLE != 0U)
+#define MODEM_TRACE(me_, text_) do {                                          \
+    if (((me_)->port != (ModemPort const *)0) &&                              \
+        ((me_)->port->trace != (void (*)(void *, char const *))0)) {          \
+        (me_)->port->trace((me_)->port->context, (text_));                    \
+    }                                                                         \
+} while (0)
+#else
+#define MODEM_TRACE(me_, text_) ((void)0)
+#endif
+
+#endif /* MODEM_COMPONENT_CONFIG_H */

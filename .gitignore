@@ -1,0 +1,97 @@
+# sensor-node-fw 项目 Git 忽略规则
+# 说明：源代码、.ioc、.uvprojx、工程文档和外部参考资料默认保留。
+
+# ==================== Keil / µVision 本地文件 ====================
+# µVision 用户选项、布局和用户相关配置
+sensor-node-fw/MDK-ARM/*.uvoptx
+sensor-node-fw/MDK-ARM/*.uvguix.*
+sensor-node-fw/MDK-ARM/DebugConfig/
+sensor-node-fw/MDK-ARM/RTE/
+
+# Keil 编译输出目录
+sensor-node-fw/MDK-ARM/Objects/
+sensor-node-fw/MDK-ARM/Listings/
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.axf
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.bin
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.hex
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.map
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.lnp
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.dep
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.o
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.d
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.build_log.htm
+sensor-node-fw/MDK-ARM/sensor-node-fw/*.htm
+
+# ==================== 通用编译产物 ====================
+# ARM/GCC/Keil 中间文件和依赖文件
+*.o
+*.obj
+*.d
+*.dep
+*.elf
+*.axf
+*.bin
+*.hex
+*.map
+*.lst
+*.su
+*.scvd
+
+# 常见构建目录
+build/
+*/build/
+cmake-build-*/
+
+# ==================== 不使用的 CMSIS 算法测试包 ====================
+# 当前固件未引用，避免把大批 DSP/NN 示例与测试源码带进基线
+sensor-node-fw/Drivers/CMSIS/DSP/
+sensor-node-fw/Drivers/CMSIS/NN/
+
+# ==================== CubeMX / 工具临时文件 ====================
+# CubeMX 生成的临时工程文件可以按需保留；当前工程的 .ioc 不会被忽略
+*.bak
+*.tmp
+*.orig
+*.rej
+*~
+
+# PDF 插件渲染产生的临时页面目录
+**/*-pages/
+
+# ==================== 文档工具本地状态 ====================
+# 保留 Obsidian 的应用配置，但不提交个人工作区布局
+/docs_sensor/.obsidian/workspace.json
+/docs_sensor/.obsidian/workspace-mobile.json
+/docs_sensor/.obsidian/cache/
+/docs_sensor/.trash/
+
+# ==================== 本机工具与分享产物 ====================
+/.trae/
+/.trae-html-share-packages/
+/sensor-node-fw.zip
+
+# ==================== 操作系统与编辑器 ====================
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ==================== 本地密钥与私有配置 ====================
+# 不忽略正式 app_config.h；只忽略明确命名的本地覆盖文件
+.env
+.env.*
+*.secret
+*.secrets
+*.pem
+*.key
+*.p12
+**/app_config.local.h
+**/*_local.h
+
+# ==================== 本地日志 ====================
+# 工程正式测试日志可保留；以下仅忽略临时调试日志
+*.log.tmp
+*.trace.tmp

@@ -1,0 +1,155 @@
+/*============================================================================
+* ble_business_example.c —— 产品业务层使用 BLE 组件的示例
+*
+* 本文件只展示“上层怎么配置产品、更新数据、主动上报、接收参数修改”。
+* UART、时基和日志已经由平台层通过 BlePort 提供，不在这里实现。
+*===========================================================================*/
+#include "ble_component.h"
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+typedef struct {
+    BleComponent ble;
+    BlePort const *port;
+    BleParam params[5];
+    uint32_t next_report_ms;
+    uint32_t report_period_ms;
+    bool first_report_sent;
+} ProductBle;
+
+static ProductBle l_productBle;
+
+/* 产品身份由业务工程配置；换产品时只改这里，不改 BLE 组件源码。 */
+static BleConfig const l_productConfig = {
+    .serial_number = "VWA2608A0013",
+    .pin = "062500",
+    .local_name = "VWA2608A0013",
+    .service_uuid = "CDAB0000-1234-5678-1234-56789ABCDEF0",
+    .device_name = "VWA-0013",
+    .model_code = "VWA-LB01",
+    .batch_code = "2026Q3-A01"
+};
+
+/* 上报字段及顺序由产品业务决定。 */
+static char const *const l_reportNames[] = {
+    "frequency",
+    "temperature",
+    "signal_quality",
+    "voltage",
+    "sample_interval"
+};
+
+/** @brief 小程序修改上报周期时，让产品业务同步自己的调度周期。 */
+static int sampleIntervalChanged(char const *name, BleValue const *value,
+                                 void *context) {
+    ProductBle *product = (ProductBle *)context;
+    (void)name;
+    if ((value->type != BLE_VALUE_INT) ||
+        (value->value.integer < 1) || (value->value.integer > 86400)) {
+        return -1;
+    }
+    product->report_period_ms = (uint32_t)value->value.integer * 1000U;
+    return 0;
+}
+
+/** @brief 产品启动时配置身份、业务参数并启动 BLE 组件。 */
+void ProductBle_Init(BlePort const *port) {
+    ProductBle *product = &l_productBle;
+    product->port = port;
+    product->report_period_ms = 60000U;
+    product->next_report_ms = 0U;
+    product->first_report_sent = false;
+
+    product->params[0] = (BleParam){
+        "frequency", "Frequency", "Hz",
+        {BLE_VALUE_INT, {.integer = 0}},
+        false, 0, 100000, 0, 0
+    };
+    product->params[1] = (BleParam){
+        "temperature", "Temperature", "C",
+        {BLE_VALUE_DECIMAL, {.decimal = {0, 2U}}},
+        false, -4000, 12500, 0, 0
+    };
+    product->params[2] = (BleParam){
+        "signal_quality", "Signal quality", "%",
+        {BLE_VALUE_INT, {.integer = 0}},
+        false, 0, 100, 0, 0
+    };
+    product->params[3] = (BleParam){
+        "voltage", "Voltage", "mV",
+        {BLE_VALUE_INT, {.integer = 3300}},
+        false, 0, 5000, 0, 0
+    };
+    product->params[4] = (BleParam){
+        "sample_interval", "Sample interval", "s",
+        {BLE_VALUE_INT, {.integer = 60}},
+        true, 1, 86400, &sampleIntervalChanged, product
+    };
+
+    BLE_Component_Init(&product->ble, port, &l_productConfig,
+                       product->params, 5U);
+    BLE_Component_Start(&product->ble);
+}
+
+/** @brief 传感器产生新数据时，业务层按参数名对应的位置更新当前值。 */
+void ProductBle_UpdateSensorData(int32_t frequency_hz,
+                                 int32_t temperature_cC,
+                                 int32_t signal_percent,
+                                 int32_t voltage_mv) {
+    ProductBle *product = &l_productBle;
+    product->params[0].value.value.integer = frequency_hz;
+    /* 例如 2261 表示 22.61 摄氏度，避免组件依赖 float/double。 */
+    product->params[1].value.value.decimal.mantissa = temperature_cC;
+    product->params[2].value.value.integer = signal_percent;
+    product->params[3].value.value.integer = voltage_mv;
+}
+
+/** @brief 业务需要立即上报时调用；未连接或未认证会返回 false。 */
+bool ProductBle_ReportNow(void) {
+    return BLE_Component_Report(&l_productBle.ble, l_reportNames,
+                                sizeof(l_reportNames) / sizeof(l_reportNames[0]));
+}
+
+/**
+* @brief 业务主循环或任务周期调用。
+* @param now_ms 产品工程当前毫秒时间，可自然回绕。
+*/
+void ProductBle_Process(uint32_t now_ms) {
+    ProductBle *product = &l_productBle;
+    BLE_Component_Process(&product->ble);
+
+    if (!BLE_Component_IsReady(&product->ble)) {
+        product->first_report_sent = false;
+        return;
+    }
+
+    /* 每次重新认证后立即上报一包当前数据。 */
+    if (!product->first_report_sent) {
+        if (ProductBle_ReportNow()) {
+            product->first_report_sent = true;
+            product->next_report_ms = now_ms + product->report_period_ms;
+        }
+        return;
+    }
+
+    /* 后续按小程序可修改的 sample_interval 周期上报。 */
+    if ((int32_t)(now_ms - product->next_report_ms) >= 0) {
+        if (ProductBle_ReportNow()) {
+            product->next_report_ms = now_ms + product->report_period_ms;
+        }
+    }
+}
+
+/* 产品工程调用关系示意：
+
+ProductBle_Init(&platform_ble_port);
+
+for (;;) {
+    ProductBle_UpdateSensorData(freq, temperature_cC, signal, voltage_mv);
+    ProductBle_Process(Platform_GetTickMs());
+}
+
+需要告警或按键触发立即上传时：
+    (void)ProductBle_ReportNow();
+*/

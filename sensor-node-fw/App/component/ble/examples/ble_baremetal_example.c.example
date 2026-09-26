@@ -1,0 +1,134 @@
+/*============================================================================
+* ble_baremetal_example.c —— BLE 组件裸机接入示例
+* NOTE：Platform_* 函数由目标 MCU 工程实现；ISR 中禁止解析与打印。
+*===========================================================================*/
+#include "ble_component.h"
+#include <stddef.h>
+#include <stdint.h>
+
+#define EXAMPLE_RX_RING_SIZE (256U)
+
+typedef struct {
+    volatile uint16_t head;
+    volatile uint16_t tail;
+    uint8_t data[EXAMPLE_RX_RING_SIZE];
+} ExampleUart;
+
+static ExampleUart l_uart;
+static BleComponent l_ble;
+static BlePort l_port;
+static BleParam l_params[5];
+
+/* 以下四个函数由目标平台实现。 */
+extern void Platform_BleUartStart(uint32_t baud);
+extern int Platform_BleUartWriteNonBlocking(uint8_t const *data, size_t len);
+extern uint32_t Platform_GetTickMs(void);
+extern void Platform_DebugPrint(char const *text);
+
+static ble_port_status_t portWrite(void *context, uint8_t const *data,
+                                   size_t length) {
+    (void)context;
+    return (Platform_BleUartWriteNonBlocking(data, length) != 0)
+        ? BLE_PORT_OK : BLE_PORT_BUSY;
+}
+
+static size_t portRead(void *context, uint8_t *out, size_t capacity) {
+    ExampleUart *uart = (ExampleUart *)context;
+    size_t used = 0U;
+    while ((used < capacity) && (uart->tail != uart->head)) {
+        out[used++] = uart->data[uart->tail];
+        uart->tail = (uint16_t)((uart->tail + 1U) % EXAMPLE_RX_RING_SIZE);
+    }
+    return used;
+}
+
+static uint32_t portTickMs(void *context) {
+    (void)context;
+    return Platform_GetTickMs();
+}
+
+static void portTrace(void *context, char const *text) {
+    (void)context;
+    Platform_DebugPrint(text);
+}
+
+/* 在蓝牙 UART RX ISR 中调用；这里只存字节，不解析、不打印。 */
+void BLE_Example_UartRxIsr(uint8_t byte) {
+    uint16_t next = (uint16_t)((l_uart.head + 1U) % EXAMPLE_RX_RING_SIZE);
+    if (next != l_uart.tail) {
+        l_uart.data[l_uart.head] = byte;
+        l_uart.head = next;
+    }
+}
+
+void BLE_Example_Init(void) {
+    static BleConfig const config = {
+        "VWA2608A0013",
+        "062500",
+        "VWA2608A0013",
+        "CDAB0000-1234-5678-1234-56789ABCDEF0",
+        "VWA-0013",
+        "VWA-LB01",
+        "2026Q3-A01"
+    };
+
+    l_params[0] = (BleParam){"frequency", "Frequency", "Hz",
+        {BLE_VALUE_INT, {.integer = 0}}, false, 0, 100000, 0, 0};
+    l_params[1] = (BleParam){"temperature", "Temperature", "C",
+        {BLE_VALUE_DECIMAL, {.decimal = {0, 2U}}}, false, -4000, 12500, 0, 0};
+    l_params[2] = (BleParam){"signal_quality", "Signal quality", "%",
+        {BLE_VALUE_INT, {.integer = 0}}, false, 0, 100, 0, 0};
+    l_params[3] = (BleParam){"voltage", "Voltage", "mV",
+        {BLE_VALUE_INT, {.integer = 3300}}, false, 0, 5000, 0, 0};
+    l_params[4] = (BleParam){"sample_interval", "Sample interval", "s",
+        {BLE_VALUE_INT, {.integer = 60}}, true, 1, 86400, 0, 0};
+
+    l_port.context = &l_uart;
+    l_port.write = &portWrite;
+    l_port.read = &portRead;
+    l_port.get_tick_ms = &portTickMs;
+    l_port.trace = &portTrace;
+
+    Platform_BleUartStart(115200U);
+    BLE_Component_Init(&l_ble, &l_port, &config, l_params, 5U);
+    BLE_Component_Start(&l_ble);
+}
+
+void BLE_Example_UpdateMeasurement(int32_t temperature_cC,
+                                   int32_t frequency_hz,
+                                   int32_t signal_percent,
+                                   int32_t voltage_mv) {
+    l_params[0].value.value.integer = frequency_hz;
+    l_params[1].value.value.decimal.mantissa = temperature_cC;
+    l_params[2].value.value.integer = signal_percent;
+    l_params[3].value.value.integer = voltage_mv;
+}
+
+void BLE_Example_Process(void) {
+    static uint32_t next_report_ms;
+    static char const *const report_names[] = {
+        "frequency", "temperature", "signal_quality", "voltage",
+        "sample_interval"
+    };
+    uint32_t const now = Platform_GetTickMs();
+
+    BLE_Component_Process(&l_ble);
+    if (BLE_Component_IsReady(&l_ble) &&
+        ((int32_t)(now - next_report_ms) >= 0)) {
+        if (BLE_Component_Report(&l_ble, report_names, 5U)) {
+            next_report_ms = now +
+                (uint32_t)l_params[4].value.value.integer * 1000U;
+        }
+    }
+}
+
+/* 目标工程主循环示意：
+int main(void) {
+    Platform_Init();
+    BLE_Example_Init();
+    for (;;) {
+        BLE_Example_Process();
+        Platform_Idle();
+    }
+}
+*/

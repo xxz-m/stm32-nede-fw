@@ -105,7 +105,7 @@ else { $report += '无需处理：QV_PRJ 已存在' }
 # ----------------------------------------------------------- 3) 头文件搜索路径
 # 按磁盘实际情况收集需要加入编译的头文件目录
 $incDirs = @()
-foreach ($layer in @('App\app', 'App\service', 'App\driver', 'App\bsp', 'App\component')) {
+foreach ($layer in @('App\app', 'App\app_command', 'App\service', 'App\driver', 'App\bsp', 'App\component')) {
     $d = Join-Path $root $layer
     if (Test-HasHeader $d) {
         $incDirs += (Get-RelPath $d)

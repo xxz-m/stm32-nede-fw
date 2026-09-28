@@ -18,16 +18,64 @@
 #include <string.h>
 
 /*--------------------------------------------------------------- 主题定义 */
-/*! 主题后缀；与云端约定的 /{productId}/{deviceId}/{suffix} 一一对应。 */
+/*! 主题后缀；拼装方式见 `buildTopics()` 的 `"%s%s/%s%s"`
+*  （主题前缀 + product + '/' + device + 后缀；两个 '/' 的归属不同，见下）。
+*
+*  NOTE (后缀**必须自带那个 '/'**，2026-09-27 踩坑订正)：格式串里 product 与 device 之间
+*    的 '/' 属于分隔符，device 与后缀之间的 '/' 只能由后缀自己带。漏带会拼出一个
+*    **中间少一个斜杠**的主题——例如 `"command"` 会拼成
+*    `sensor-product/869413084698157command`。
+*    这个错误不会报错、模组还会回 `+MQTTSUBACK`（订阅成功了，只是订错了主题），
+*    表现为「设备在线、订阅齐全、平台发布无回应」，极难查。**本坑已实际踩过一次**：
+*    `#48` 加 `command` 时把后缀写成 `"command"`，直到 `#51` 打出 `+MQTTSUBACK` 原文才发现。
+*
+*  NOTE (最前面的 '/' **按主题逐条给**，2026-09-28 订正)：见下面的 `kTopicPrefix[]` 表。
+*    历史上这里按"收发方向"一刀切（订阅取一个前缀、发布取另一个），`#58`→`#62` 因此把
+*    `command/reply` 发到了**带** '/' 的 5 段主题上，而平台认的是**不带** '/' 的 4 段
+*    `sensor-product/<pid>/<did>/command/reply` → 平台事件停在 `WAITING_RESPONSE`、
+*    20 s 判"指令超时"（**已实测**）。**结论：'/' 的归属由主题用途决定
+*    （数据上报 vs 命令交互），与收/发方向无关**；平台以后单独要求某一条换形态时，
+*    只改 `app_config.h` 里对应的那个前缀宏即可，不必再推理"方向"、也不必碰本文件。
+*    历史（别重复踩）：`#48` 把格式串由 `"/%s/%s/%s"` 改成 `"%s/%s%s"`，把 10 条主题的前导 '/'
+*    一起弄没了；`#50`/`#51` 按当时的实机现象记成「与当前平台一致」（那次确证的是 `command`
+*    通道不带 '/'）；`#58` 一度改成全体带 '/'。**任何一侧的前缀变更都必须与平台页面同步**，
+*    否则订阅串与发布串对不上，症状是「订阅成功、平台发布无回应」。 */
 static char const *const kTopicSuffix[MODEM_TOPIC_COUNT] = {
-    "properties/report",
-    "properties/read",
-    "properties/read/reply",
-    "properties/write",
-    "properties/write/reply",
-    "function/invoke",
-    "state-check",
-    "state-check/reply"
+    "/properties/report",
+    "/properties/read",
+    "/properties/read/reply",
+    "/properties/write",
+    "/properties/write/reply",
+    "/function/invoke",
+    "/state-check",
+    "/state-check/reply",
+    "/command",
+    "/command/reply"
+};
+
+/*! 每条主题的**前导 '/'**：**一条主题一个宏**，宏在 `app_config.h`
+*  （`APP_CFG_MODEM_TOPIC_PREFIX_*`，经 `modem_component_config.h` 映射进来），有编译期护栏。
+*
+*  NOTE (只有"数据上报"那一条带 '/')：
+*    - `MODEM_TOPIC_REPORT` → `/sensor-product/<did>/properties/report`：平台属性上报页
+*      原文要求「订阅 `/{productId}/{deviceId}/properties/report`」——**带** '/'；
+*    - 其余 9 条（5 条订阅 + 4 条应答）不带 '/'：命令与它的回复都在平台的
+*      「控制主题模板 / 回复主题模板」这一格里闭环，两栏写的都是**4 段、无前导 '/'** 的串。
+*      实测：2026-09-27 平台「上行」栏出现过 `sensor-product/869413084698157/command/reply`。
+*  NOTE (为什么逐条成表)：`#48`→`#62` 的反复说明「按方向一刀切」是错的模型——平台侧是
+*    两个互不相干的主题空间，换形态时应当**指名到主题**。**本表与那 10 个宏一一对应**
+*    （顺序 = `MODEM_TOPIC_*` 枚举顺序），平台要求某一条换形态时只改 `app_config.h` 那一行。 */
+static char const *const kTopicPrefix[MODEM_TOPIC_COUNT] = {
+    MODEM_COMPONENT_TOPIC_PREFIX_REPORT,         /* MODEM_TOPIC_REPORT        数据上报：带 '/' */
+    MODEM_COMPONENT_TOPIC_PREFIX_READ,           /* MODEM_TOPIC_READ                         */
+    MODEM_COMPONENT_TOPIC_PREFIX_READ_REPLY,     /* MODEM_TOPIC_READ_REPLY                   */
+    MODEM_COMPONENT_TOPIC_PREFIX_WRITE,          /* MODEM_TOPIC_WRITE                        */
+    MODEM_COMPONENT_TOPIC_PREFIX_WRITE_REPLY,    /* MODEM_TOPIC_WRITE_REPLY                  */
+    MODEM_COMPONENT_TOPIC_PREFIX_INVOKE,         /* MODEM_TOPIC_INVOKE                       */
+    MODEM_COMPONENT_TOPIC_PREFIX_STATE,          /* MODEM_TOPIC_STATE                        */
+    MODEM_COMPONENT_TOPIC_PREFIX_STATE_REPLY,    /* MODEM_TOPIC_STATE_REPLY                  */
+    MODEM_COMPONENT_TOPIC_PREFIX_COMMAND,        /* MODEM_TOPIC_COMMAND                      */
+    MODEM_COMPONENT_TOPIC_PREFIX_COMMAND_REPLY   /* MODEM_TOPIC_COMMAND_REPLY 回复：不带 '/' */
 };
 
 /*! 每类逻辑主题的收发方向；决定后端把它登记为订阅、发布还是两者。 */
@@ -39,7 +87,9 @@ static ModemDirection const kTopicDirection[MODEM_TOPIC_COUNT] = {
     MODEM_DIR_PUBLISH,    /* MODEM_TOPIC_WRITE_REPLY */
     MODEM_DIR_SUBSCRIBE,  /* MODEM_TOPIC_INVOKE      */
     MODEM_DIR_SUBSCRIBE,  /* MODEM_TOPIC_STATE       */
-    MODEM_DIR_PUBLISH     /* MODEM_TOPIC_STATE_REPLY */
+    MODEM_DIR_PUBLISH,    /* MODEM_TOPIC_STATE_REPLY */
+    MODEM_DIR_SUBSCRIBE,  /* MODEM_TOPIC_COMMAND       */
+    MODEM_DIR_PUBLISH     /* MODEM_TOPIC_COMMAND_REPLY */
 };
 
 /*--------------------------------------------------------------- 小工具 */
@@ -141,6 +191,44 @@ static bool appendDecimal(char *buffer, size_t capacity, size_t *used,
     return append(buffer, capacity, used, part);
 }
 
+/** @brief 追加已转义的 JSON 字符串内容（不含两侧引号）。
+*
+* 平台规则第 6 条要求 `\r\n` 在 JSON 里必须是**两个转义字符**（`\r`+`\n`），
+* 不允许写成物理换行；`"` 与 `\` 也必须转义。原始 AT 回复里三样都会出现，
+* 所以这里逐字符处理，而不是直接 `append()` 原文。
+*
+* @return true = 全部追加成功；false = 容量不够（**不做部分写入**，避免发出半条 JSON）
+*/
+static bool appendJsonEscaped(char *buffer, size_t capacity, size_t *used,
+                              char const *text) {
+    size_t length = strlen(text);
+    size_t index;
+    char part[3];
+
+    /* 最坏情况每个字节都变成两字符转义，先按上界校验，避免写到一半才发现放不下 */
+    if ((*used + (length * 2U) + 1U) > capacity) {
+        return false;
+    }
+    for (index = 0U; index < length; ++index) {
+        switch (text[index]) {
+            case '"':  part[0] = '\\'; part[1] = '"';  break;
+            case '\\': part[0] = '\\'; part[1] = '\\'; break;
+            case '\r': part[0] = '\\'; part[1] = 'r';  break;
+            case '\n': part[0] = '\\'; part[1] = 'n';  break;
+            case '\t': part[0] = '\\'; part[1] = 't';  break;
+            default:
+                part[0] = text[index];
+                part[1] = '\0';
+                break;
+        }
+        part[2] = '\0';
+        if (!append(buffer, capacity, used, part)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /** @brief 追加 ",\"name\":\"text\""（文本按原样放入，不做转义；调用方保证内容是十六进制或纯文本）。 */
 static bool appendText(char *buffer, size_t capacity, size_t *used,
                        char const *name, char const *text) {
@@ -192,6 +280,81 @@ static bool jsonString(char const *json, char const *key, char *out, size_t capa
     }
     (void)memcpy(out, cursor, length);
     out[length] = '\0';
+    return true;
+}
+
+/** @brief 从 JSON 里取字符串字段，并**解码转义**（平台 AT 命令下行专用）。
+*
+* 为什么不复用上面的 `jsonString()`：那个只适合「值里绝不会出现引号」的旧字段
+* （`cmd` / `param` / `v`）。平台 AT 命令下行不同——写参数的命令本身就带引号，
+* 例如 `AT+SN="VWA2608A0020"`，在线路上的 JSON 是
+* `{"id":"42","command":"AT+SN=\"VWA2608A0020\""}`。
+* 用 `jsonString()` 会在 `\"` 的那个反斜杠处停住，取到 `AT+SN=\`，静默产生一条残命令。
+*
+* 支持的转义：`\"` `\\` `\/` `\b` `\f` `\n` `\r` `\t`。`\uXXXX` 不支持（AT 命令是
+* ASCII，出现即视为非法并返回 false，宁可拒收也不猜）。
+*
+* @return true = 取到并解码成功，且结果放得下；false = 字段缺失、格式错或缓冲不够
+*/
+static bool jsonStringUnescape(char const *json, char const *key,
+                               char *out, size_t capacity) {
+    char pattern[32];
+    char const *cursor;
+    size_t used = 0U;
+    int produced = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+
+    if ((produced < 0) || ((size_t)produced >= sizeof(pattern))) {
+        return false;
+    }
+    cursor = strstr(json, pattern);
+    if (cursor == (char const *)0) {
+        return false;
+    }
+    cursor += strlen(pattern);
+    while (*cursor == ' ') {
+        ++cursor;
+    }
+    if (*cursor != ':') {
+        return false;
+    }
+    ++cursor;
+    while (*cursor == ' ') {
+        ++cursor;
+    }
+    if (*cursor != '"') {
+        return false;
+    }
+    ++cursor;
+
+    while ((*cursor != '\0') && (*cursor != '"')) {
+        char decoded = *cursor;
+
+        if (*cursor == '\\') {
+            ++cursor;
+            switch (*cursor) {
+                case '"':  decoded = '"';  break;
+                case '\\': decoded = '\\'; break;
+                case '/':  decoded = '/';  break;
+                case 'b':  decoded = '\b'; break;
+                case 'f':  decoded = '\f'; break;
+                case 'n':  decoded = '\n'; break;
+                case 'r':  decoded = '\r'; break;
+                case 't':  decoded = '\t'; break;
+                default:
+                    return false;   /* 含 \uXXXX 等不支持形式：整条拒收 */
+            }
+        }
+        if ((used + 1U) >= capacity) {
+            return false;
+        }
+        out[used] = decoded;
+        ++used;
+        ++cursor;
+    }
+    if (*cursor != '"') {
+        return false;   /* 没有收尾引号 */
+    }
+    out[used] = '\0';
     return true;
 }
 
@@ -261,7 +424,29 @@ static bool parseInt32(char const *text, int32_t *out) {
 }
 
 /*--------------------------------------------------------------- 主题组装 */
-/** @brief 按产品标识、设备标识与后缀拼出全部主题，并分配订阅/发布序号。 */
+/*! 编译期护栏：**每条主题的前缀宏**只能是 `""` 或 `"/"`（写成别的会拼出非法主题名）。
+*  负数组长度 = 编译报错，与 `svc_param.c` 里的同款做法一致。
+*  NOTE (为什么逐个列出来)：这 10 个宏就是 `kTopicPrefix[]` 的 10 行，**漏掉一个就等于那一行
+*    没有护栏**；加新主题时这两处一起补（表 + 这里）。 */
+#define MODEM_TOPIC_PREFIX_OK(prefix_) \
+    ((sizeof(prefix_) >= 1U) && (sizeof(prefix_) <= 2U))
+typedef char modemTopicPrefixCheck[
+    (MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_REPORT) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_READ) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_READ_REPLY) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_WRITE) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_WRITE_REPLY) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_INVOKE) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_STATE) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_STATE_REPLY) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_COMMAND) &&
+     MODEM_TOPIC_PREFIX_OK(MODEM_COMPONENT_TOPIC_PREFIX_COMMAND_REPLY)) ? 1 : -1];
+
+/** @brief 按产品标识、设备标识与后缀拼出全部主题，并分配订阅/发布序号。
+* @note 前导 '/' **按主题取**（`kTopicPrefix[]`，值来自 `app_config.h` 的
+*   `APP_CFG_MODEM_TOPIC_PREFIX_*`）：只有数据上报那条带 '/'，其余一律不带——
+*   '/' 的归属由主题用途决定，与收/发方向无关（见那张表的 NOTE）。
+*   device 与后缀之间的 '/' 由**后缀字符串自己带**（见 `kTopicSuffix` 的 NOTE），别弄混。 */
 static void buildTopics(ModemComponent *me) {
     uint8_t index;
 
@@ -269,11 +454,13 @@ static void buildTopics(ModemComponent *me) {
     me->next_publish_id = 1U;
     for (index = 0U; index < MODEM_TOPIC_COUNT; ++index) {
         ModemTopicSlot *slot = &me->topic[index];
-        int produced = snprintf(slot->name, sizeof(slot->name), "/%s/%s/%s",
+        ModemDirection const direction = kTopicDirection[index];
+        int produced = snprintf(slot->name, sizeof(slot->name), "%s%s/%s%s",
+                                kTopicPrefix[index],
                                 me->config->product_id, me->config->device_id,
                                 kTopicSuffix[index]);
 
-        slot->direction = kTopicDirection[index];
+        slot->direction = direction;
         /* QoS 由用途决定：周期数据用 0，命令应答用 1（NT26 在登记主题时固定）。 */
         slot->publish_qos = (index == (uint8_t)MODEM_TOPIC_REPORT) ? 0U : 1U;
         slot->subscribe_id = 0U;
@@ -298,6 +485,18 @@ static void buildTopics(ModemComponent *me) {
 static void feedLine(ModemComponent *me, char const *line, uint32_t now) {
     ModemBackend const *backend = Modem_Backend_Get();
     size_t length = strlen(line);
+
+    /* NOTE (临时诊断，2026-09-27)：把模组**发来**的 `+MQTT*` 行原样打进日志。
+     *   为什么必须这么做：本函数对认不出的行是**静默丢弃**的（下面 `at.phase != WAITING`
+     *   就直接 return），所以「串口没有下行迹象」既可能是消息没到模组，也可能是到了但
+     *   通知名称与 `backend->urc_starts` 不匹配。不打出原始行就无法区分这两种情况。
+     *   本函数只处理入方向，因此不会把出站命令里的凭据带进日志。
+     *   开关见 `APP_CFG_MODEM_TRACE_URC`，确认完应改回 0。 */
+#if (MODEM_COMPONENT_TRACE_URC_ENABLE != 0U)
+    if (strstr(line, "+MQTT") != (char const *)0) {
+        MODEM_TRACE(me, line);
+    }
+#endif
 
     /* 通知优先：负载里常常含裸换行，若当应答文本匹配，负载里恰好出现的 OK
      * 会让状态机误判。已有一条收全的通知时不再接收新行，等上层分发完再说。 */
@@ -378,14 +577,19 @@ static void readPort(ModemComponent *me, uint32_t now) {
 }
 
 /*--------------------------------------------------------------- 计划推进 */
+/** @brief 这一步是否属于公网可达性探测（`MODEM_OP_NET_PROBE_*` 的连续区间）。 */
+static bool isNetProbeOp(ModemOp op) {
+    return (op >= MODEM_OP_NET_PROBE_OPEN) && (op <= MODEM_OP_NET_PROBE_CLOSE);
+}
+
 /** @brief 由语义动作推导组件状态，供上层显示与日志使用。 */
 static ModemComponentState stateOfOp(ModemOp op) {
     if (op == MODEM_OP_PROBE) {
         return MODEM_COMPONENT_PROBING;
     }
-    /* MODEM_OP_PDP 虽然追加在枚举末尾，语义上属于「入网」阶段（查 APN），
-     * 这里单独放行，只是为了让状态显示准确，与调度无关。 */
-    if ((op <= MODEM_OP_IP_ADDRESS) || (op == MODEM_OP_PDP)) {
+    /* MODEM_OP_PDP 与可达性探测虽然追加在枚举末尾，语义上属于「入网」阶段
+     * （查 APN / 试公网通路），这里单独放行，只是为了让状态显示准确，与调度无关。 */
+    if ((op <= MODEM_OP_IP_ADDRESS) || (op == MODEM_OP_PDP) || isNetProbeOp(op)) {
         return MODEM_COMPONENT_NETWORK;
     }
     return MODEM_COMPONENT_MQTT;
@@ -435,9 +639,17 @@ static void failPlan(ModemComponent *me, ModemFailure failure) {
 #if (MODEM_COMPONENT_TRACE_ENABLE != 0U)
 /** @brief 把源文本压成一行可打印 ASCII：只取第一行，非可打印字符换成 '.'。
 *  NOTE (为什么清洗)：AT 命令尾部带 CRLF，应答也可能是多行；原样进日志会把一行
-*   拆成几行并混入控制字符，而运行期输出必须保持 ASCII 单行（见 AGENTS.md 5.2）。 */
+*   拆成几行并混入控制字符，而运行期输出必须保持 ASCII 单行（见 AGENTS.md 5.2）。
+*  NOTE (截断必须可见，2026-09-27 加)：本函数原来把超长内容直接砍断，不留下任何标记，
+*   于是 `AT+MQTTSUB="sensor-product/869413084698157/command",1,0` 会打成
+*   `AT+MQTTSUB="sensor-product/86941308` —— **看起来像一条缺引号、缺参数的残命令**。
+*   （示例里的主题串不带前导 '/' 是对的——命令通道本来就不带；前导 '/' 逐条给，
+*   见 `kTopicPrefix[]` 与 app_config.h 的 `APP_CFG_MODEM_TOPIC_PREFIX_*`。）
+*   这个假象已经骗过两次排查（`#44` 的 `AT+NSOSD`、`#52` 的主题步），所以现在截断处
+*   一律补 `...`，让人一眼看出「这是被截过的，不是命令本身长这样」。 */
 static void describeField(char const *source, char *out, size_t capacity) {
     size_t index = 0U;
+    bool truncated = false;
 
     if ((out == (char *)0) || (capacity == 0U)) {
         return;
@@ -453,6 +665,16 @@ static void describeField(char const *source, char *out, size_t capacity) {
                          ? (char)character
                          : '.';
         ++index;
+    }
+    /* 还有内容没放下（或被 CR/LF 截住）：留 3 字节写省略号 */
+    truncated = ((source[index] != '\0') && (source[index] != '\r') &&
+                 (source[index] != '\n'));
+    if (truncated && (capacity >= 4U)) {
+        index = capacity - 4U;          /* 覆盖最后 3 个字符，腾出位置 */
+        out[index] = '.';
+        out[index + 1U] = '.';
+        out[index + 2U] = '.';
+        index += 3U;
     }
     out[index] = '\0';
 }
@@ -544,6 +766,7 @@ static void describeReply(char const *source, char *out, size_t capacity) {
 static void traceStepResult(ModemComponent *me, char const *tag,
                             ModemFailure reason) {
     ModemBackend const *backend = Modem_Backend_Get();
+    ModemStep const *step = &backend->plan[me->plan_step];
     char command[MODEM_DIAG_FIELD_MAX];
     char reply[MODEM_DIAG_REPLY_MAX];
     char line[MODEM_DIAG_LINE_MAX];
@@ -551,11 +774,27 @@ static void traceStepResult(ModemComponent *me, char const *tag,
 
     describeField(me->command, command, sizeof(command));
     describeReply(me->response, reply, sizeof(reply));
-    produced = snprintf(line, sizeof(line),
-                        "step %u/%u %s cmd=\"%s\" rx=\"%s\" reason=%u",
-                        (unsigned)me->plan_step + 1U,
-                        (unsigned)backend->plan_count, tag, command, reply,
-                        (unsigned)reason);
+
+    /* NOTE (主题步失败要额外带上主题名，2026-09-27 加)：`cmd` 字段有 36 字节护栏
+     *   （见 `MODEM_DIAG_FIELD_MAX`，那是为了挡住 MQTTCFG 里的凭据），而 `AT+MQTTSUB=`
+     *   光是前缀就 11 字节、product 段又占掉一大截 —— 截断后**恰好把后缀丢了**，
+     *   于是 `MT+MQTTSUB="sensor-product/86941308` 根本看不出失败的是哪一条主题。
+     *   实测排查时就卡在这里。主题名不含凭据，可以整条打出。 */
+    if (step->op == MODEM_OP_TOPIC_SUB) {
+        char const *name = me->topic[me->topic_cursor].name;
+
+        produced = snprintf(line, sizeof(line),
+                            "step %u/%u %s cmd=\"%s\" rx=\"%s\" reason=%u topic=\"%s\"",
+                            (unsigned)me->plan_step + 1U,
+                            (unsigned)backend->plan_count, tag, command, reply,
+                            (unsigned)reason, name);
+    } else {
+        produced = snprintf(line, sizeof(line),
+                            "step %u/%u %s cmd=\"%s\" rx=\"%s\" reason=%u",
+                            (unsigned)me->plan_step + 1U,
+                            (unsigned)backend->plan_count, tag, command, reply,
+                            (unsigned)reason);
+    }
     if (produced > 0) {
         MODEM_TRACE(me, line);
     }
@@ -605,6 +844,30 @@ static uint8_t topicTotal(ModemComponent const *me, ModemOp op) {
     return total;
 }
 
+/** @brief 主题步已经下发了第几条（1 开始）；只数**本步真正下发**的那些主题。
+*
+* NOTE (为什么不能直接用 topic_cursor + 1)：`topic_cursor` 是**槽下标**，它会跳过
+*   本步不下发的槽。5 条订阅主题的槽下标实际是 1/3/5/6/8，直接打印会出现
+*   `topic 2/5`、`topic 4/5` … `topic 9/5` 这种「分子大于分母」的假进度——
+*   `#51` 排查时正是靠这行原文才发现主题名拼错，但**错误的 k/n 差点让人读反**。 */
+static uint8_t topicIssued(ModemComponent const *me, ModemOp op) {
+    uint8_t index;
+    uint8_t issued = 0U;
+
+    for (index = 0U; (index <= me->topic_cursor) && (index < (uint8_t)MODEM_TOPIC_COUNT);
+         ++index) {
+        ModemTopicSlot const *slot = &me->topic[index];
+        if (!slot->registered) {
+            continue;
+        }
+        if (((op == MODEM_OP_TOPIC_SUB) ? slot->subscribe_id
+                                        : slot->publish_id) != 0U) {
+            ++issued;
+        }
+    }
+    return issued;
+}
+
 /** @brief 某一步**成功**时只打进度，不打命令与应答。
 *  NOTE (与 traceStepResult 的分工，2026-09-19 按用户要求调整)：成功路径每一步都打
 *   cmd/rx 会把串口刷满——连接计划 17 步，主题步还要按主题逐条展开，一次连接就是
@@ -622,7 +885,7 @@ static void traceStepProgress(ModemComponent *me) {
         produced = snprintf(line, sizeof(line), "step %u/%u ok topic %u/%u",
                             (unsigned)me->plan_step + 1U,
                             (unsigned)backend->plan_count,
-                            (unsigned)me->topic_cursor + 1U,
+                            (unsigned)topicIssued(me, step->op),
                             (unsigned)topicTotal(me, step->op));
     } else {
         produced = snprintf(line, sizeof(line), "step %u/%u ok",
@@ -680,6 +943,15 @@ static void sendStep(ModemComponent *me, ModemStep const *step, char const *expe
     ModemAt_Begin(&me->at, expected, now, step->timeout_ms);
 }
 
+/** @brief 该步是否按「预算 + 重发」推进（REPEAT 与 OPTIONAL_REPEAT 同构）。
+* @note 两者的差别只在**预算用尽之后**：REPEAT 让整条计划失败，OPTIONAL_REPEAT 继续。
+*   推进与期限计算（step_deadline_ms 取 budget_ms、按 retry_ms 重发）完全一致，
+*   所以凡是判断「时限取哪一档」的地方都必须一起认这两个模式，漏一个就会把
+*   OPTIONAL_REPEAT 的等待预算当成单次应答超时，等待窗口变成几百毫秒。 */
+static bool stepIsRepeat(uint8_t mode) {
+    return (mode == MODEM_STEP_REPEAT) || (mode == MODEM_STEP_OPTIONAL_REPEAT);
+}
+
 /** @brief 取计划中下一步；所有步骤都已完成时转入在线态。 */
 static void startPlanStep(ModemComponent *me, uint32_t now) {
     ModemBackend const *backend = Modem_Backend_Get();
@@ -698,7 +970,7 @@ static void startPlanStep(ModemComponent *me, uint32_t now) {
             me->attempt = 0U;
             me->recover_done = false;
             me->step_started_ms = now;
-            me->step_deadline_ms = now + ((step->mode == MODEM_STEP_REPEAT)
+            me->step_deadline_ms = now + (stepIsRepeat(step->mode)
                                               ? step->budget_ms : step->timeout_ms);
             me->next_attempt_ms = now;
             sendStep(me, step, expected, now);
@@ -710,10 +982,25 @@ static void startPlanStep(ModemComponent *me, uint32_t now) {
     }
 }
 
+/** @brief 当前步骤成功后，下一步发送前要等的非阻塞时间（毫秒）。
+*
+* NOTE (为什么要有全局最小间隔，2026-09-27)：MN316 手册（通信流程示例，第 16 页）要求
+*   「每次只能发送单个 AT 命令，只有前一个 AT 命令执行完毕，才能执行下一个 AT 命令」。
+*   本工程原先的做法是「解析到上一条 OK 的同一个 Process 周期内就写下一条」——虽然
+*   按「等应答」的语义没错，但模组内部收尾还没完，正是手册里 `+CME ERROR:8007`
+*   （AT 通道忙，上一条 AT 请求尚未处理完）的成因。这里给每一步之后都垫一个最小间隔，
+*   步骤自己声明的 post_success_delay_ms 更长时以它为准。 */
+static uint32_t interCommandDelay(ModemStep const *step) {
+    return (step->post_success_delay_ms > MODEM_COMPONENT_AT_GAP_MS)
+               ? step->post_success_delay_ms
+               : MODEM_COMPONENT_AT_GAP_MS;
+}
+
 /** @brief 当前步骤成功：TOPIC 步前进一条主题，其余前进整步。 */
 static void stepSucceeded(ModemComponent *me, uint32_t now) {
     ModemBackend const *backend = Modem_Backend_Get();
     ModemStep const *step = &backend->plan[me->plan_step];
+    uint32_t delay_ms;
 
     traceStepProgress(me);
     ModemAt_Reset(&me->at);
@@ -722,6 +1009,22 @@ static void stepSucceeded(ModemComponent *me, uint32_t now) {
     } else {
         ++me->plan_step;
         me->topic_cursor = 0U;
+    }
+    if ((step->op == MODEM_OP_MQTT_STATE) && me->session_reused) {
+        /* 模组已有有效 MQTT 会话：跳过 DISC/DEL/CFG/OPEN，直接进入主题步骤。 */
+        while ((me->plan_step < backend->plan_count) &&
+               (backend->plan[me->plan_step].op != MODEM_OP_TOPIC_SUB)) {
+            ++me->plan_step;
+        }
+        me->session_reused = false;
+    }
+    delay_ms = interCommandDelay(step);
+    if (delay_ms != 0U) {
+        /* 成功后的稳定等待必须独立于 REPEAT 的失败预算，且不能阻塞 QV。 */
+        me->step_delay_active = true;
+        me->step_delay_until_ms = now + delay_ms;
+        me->next_attempt_ms = me->step_delay_until_ms;
+        return;
     }
     startPlanStep(me, now);
 }
@@ -737,7 +1040,7 @@ static void stepFailed(ModemComponent *me, ModemStep const *step, uint32_t now) 
         stepSucceeded(me, now);
         return;
     }
-    if (step->mode == MODEM_STEP_REPEAT) {
+    if (stepIsRepeat(step->mode)) {
         bool attempts_left = (me->attempt < step->attempts);
         bool budget_left = (step->budget_ms != 0U) &&
                            (!ModemAt_DeadlineReached(now, me->step_deadline_ms));
@@ -749,6 +1052,15 @@ static void stepFailed(ModemComponent *me, ModemStep const *step, uint32_t now) 
              *   reason 仍照实带出，用来区分「答了但值不对」(3) 与「压根没答」(2)。 */
             traceStepResult(me, "wait", me->failure);
             me->next_attempt_ms = now + step->retry_ms;
+            return;
+        }
+        if (step->mode == MODEM_STEP_OPTIONAL_REPEAT) {
+            /* NOTE (为什么在这里收尾，2026-09-27)：OPTIONAL_REPEAT 的语义是
+             *   「尽量重试，但用尽预算也不算连接失败」。典型场景是 MQTT 状态查询：
+             *   模组可能一直停在「正在重连服务器」，我们等够预算就该按未连接继续
+             *   走重建流程，而不是把整条连接判死。 */
+            traceStepResult(me, "fail", me->failure);
+            stepSucceeded(me, now);
             return;
         }
         if ((backend->recover != (bool (*)(ModemComponent *, uint8_t))0) &&
@@ -768,6 +1080,14 @@ static void connectLoop(ModemComponent *me, uint32_t now) {
     ModemAtResult result;
     char expected[MODEM_COMPONENT_TOKEN_MAX];
 
+    if (me->step_delay_active) {
+        if (!ModemAt_DeadlineReached(now, me->step_delay_until_ms)) {
+            return;
+        }
+        me->step_delay_active = false;
+        startPlanStep(me, now);
+        return;
+    }
     if (me->plan_step >= backend->plan_count) {
         finishPlan(me);
         return;
@@ -1023,11 +1343,46 @@ static void queueReply(ModemComponent *me, ModemTopic topic, char const *message
     me->reply_pending = true;
 }
 
-/** @brief 按逻辑主题与 cmd 字段处理 ping / get / set。 */
+/** @brief 按逻辑主题与 cmd 字段处理 ping / get / set，以及平台的 AT 命令下行。 */
 static void dispatchDownlink(ModemComponent *me, ModemTopic topic) {
     char command[16];
     char parameter[40];
     char value[32];
+
+    /* 平台 AT 命令下行（规则 3.2）：字段是 `id` + `command`，与旧业务的
+     * `cmd` / `param` / `v` 完全不同，所以先单独分流，不参与下面的 cmd 解析。
+     * 这里**只拆包，不执行**——执行要访问参数存储，属于 App 层职责。 */
+    if (topic == MODEM_TOPIC_COMMAND) {
+        /* 上一条还没被 App 取走时再来一条：给新命令回忙，不覆盖旧命令。
+         * NOTE (为什么不直接覆盖)：覆盖会让**前一条**永远等不到回复，
+         *   平台按规则 3.5 会一直挂着那条命令；回一条失败至少能收口。 */
+        if (me->downlink_pending) {
+            char busyId[MODEM_COMPONENT_DOWNLINK_ID_MAX];
+
+            busyId[0] = '\0';
+            (void)jsonStringUnescape(me->payload, "id", busyId, sizeof(busyId));
+            MODEM_TRACE(me, "downlink command busy; previous one not taken yet");
+            Modem_Component_CompleteCommand(me, busyId, false, "ERROR\r\n");
+            return;
+        }
+        /* 先清空：下面 id 可能取不到，失败应答里要用「空 id」而不是上一次的残留值 */
+        me->downlink_id[0] = '\0';
+        me->downlink_command[0] = '\0';
+        if (jsonStringUnescape(me->payload, "id", me->downlink_id,
+                               sizeof(me->downlink_id)) &&
+            jsonStringUnescape(me->payload, "command", me->downlink_command,
+                               sizeof(me->downlink_command))) {
+            me->downlink_pending = true;
+            MODEM_TRACE(me, "downlink command queued for the app layer");
+        } else {
+            /* 缺字段、转义非法或命令超长：无法执行，也**不能静默**——
+             * 平台侧在等最终回复，这里必须回一条失败应答，否则命令会一直悬着。
+             * id 取不到时用空串，平台按规则 3.5 会忽略这条回复，但至少不卡设备。 */
+            MODEM_TRACE(me, "downlink command rejected (id/command missing or too long)");
+            Modem_Component_CompleteCommand(me, me->downlink_id, false, "ERROR\r\n");
+        }
+        return;
+    }
 
     if (!jsonString(me->payload, "cmd", command, sizeof(command))) {
         return;
@@ -1064,6 +1419,69 @@ static void handleDownlink(ModemComponent *me) {
     me->urc_len = 0U;
     me->urc[0] = '\0';
     me->urc_ready = false;
+}
+
+/*------------------------------------------------ 云端 AT 命令下行（平台规则） */
+bool Modem_Component_TakeCommand(ModemComponent *me,
+                                 char *id, size_t idCapacity,
+                                 char *command, size_t commandCapacity) {
+    size_t idLength;
+    size_t commandLength;
+
+    if (me == (ModemComponent *)0) {
+        return false;
+    }
+    if (!me->downlink_pending) {
+        return false;
+    }
+    /* 取出即作废：这条命令已经交给 App，组件不再持有它，避免重复执行 */
+    me->downlink_pending = false;
+
+    idLength = strlen(me->downlink_id);
+    commandLength = strlen(me->downlink_command);
+    if (((id != (char *)0) && (idLength >= idCapacity)) ||
+        ((command != (char *)0) && (commandLength >= commandCapacity))) {
+        /* 调用方的缓冲比组件的小（两边宏没对齐）：宁可整条丢掉并留下日志 */
+        MODEM_TRACE(me, "downlink command dropped (caller buffer too small)");
+        return false;
+    }
+    if (id != (char *)0) {
+        (void)memcpy(id, me->downlink_id, idLength + 1U);
+    }
+    if (command != (char *)0) {
+        (void)memcpy(command, me->downlink_command, commandLength + 1U);
+    }
+    return true;
+}
+
+void Modem_Component_CompleteCommand(ModemComponent *me, char const *id, bool ok,
+                                     char const *raw) {
+    char *out;
+    size_t used = 0U;
+    bool built;
+
+    if ((me == (ModemComponent *)0) || (raw == (char const *)0)) {
+        return;
+    }
+    /* 复用 payload 缓冲拼包：下行已经拆完，此刻它是空闲的。
+     * 平台规则第 5 条要求单层 JSON，字段固定为 id / ok / error / data。 */
+    out = me->payload;
+    out[0] = '\0';
+
+    built = append(out, sizeof(me->payload), &used, "{\"id\":\"") &&
+            appendJsonEscaped(out, sizeof(me->payload), &used,
+                              (id != (char const *)0) ? id : "") &&
+            append(out, sizeof(me->payload), &used,
+                   ok ? "\",\"ok\":true,\"data\":\"" :
+                        "\",\"ok\":false,\"error\":\"ERROR\",\"data\":\"") &&
+            appendJsonEscaped(out, sizeof(me->payload), &used, raw) &&
+            append(out, sizeof(me->payload), &used, "\"}");
+
+    if (!built) {
+        MODEM_TRACE(me, "command reply too long; dropped");
+        return;
+    }
+    queueReply(me, MODEM_TOPIC_COMMAND_REPLY, out, 1U);
 }
 
 /*--------------------------------------------------------------- 在线期推进 */
@@ -1310,6 +1728,13 @@ void Modem_Component_Start(ModemComponent *me) {
     me->next_attempt_ms = 0U;
     me->step_started_ms = 0U;
     me->step_deadline_ms = 0U;
+    me->step_delay_active = false;
+    me->step_delay_until_ms = 0U;
+    me->session_reused = false;
+    /* 每次连接开始时清掉"模组配置是否与当前身份一致"：它由 `MODEM_OP_MQTT_CFG_QUERY`
+     * 重新写入，清成 false 保证"没读到就不复用"（安全方向）。 */
+    me->remote_cfg_matches = false;
+    me->probe_socket = 0U;
     me->response_len = 0U;
     me->response[0] = '\0';
     me->line_len = 0U;

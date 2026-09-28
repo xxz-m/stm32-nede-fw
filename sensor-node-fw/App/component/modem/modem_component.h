@@ -30,6 +30,8 @@ typedef enum {
     MODEM_TOPIC_INVOKE,       /* 下行：功能调用请求（暂未实现） */
     MODEM_TOPIC_STATE,        /* 下行：状态检查请求             */
     MODEM_TOPIC_STATE_REPLY,  /* 上行：状态检查应答             */
+    MODEM_TOPIC_COMMAND,      /*!< 下行：AT 命令请求（平台规则 3.2） */
+    MODEM_TOPIC_COMMAND_REPLY,/*!< 上行：AT 命令应答（平台规则 3.3 / 3.4） */
     MODEM_TOPIC_COUNT
 } ModemTopic;
 
@@ -45,7 +47,7 @@ typedef enum {
 typedef struct {
     char const *host;          /* 服务器域名或 IP                              */
     uint16_t port;             /* 服务器端口                                   */
-    char const *product_id;    /* 产品标识，用于拼主题 /{productId}/{deviceId}/.. */
+    char const *product_id;    /* 产品标识，拼主题用（前导 '/' 按主题给，见 kTopicPrefix[]） */
     char const *device_id;     /* 设备标识，同时用作 MQTT client_id             */
     char const *username;      /* 认证用户名（日志中禁止打印）                  */
     char const *password;      /* 认证密码（日志中禁止打印）                    */
@@ -123,6 +125,20 @@ typedef struct {
     uint32_t step_started_ms;
     uint32_t step_deadline_ms;
     uint32_t next_attempt_ms;
+    bool step_delay_active;
+    uint32_t step_delay_until_ms;
+    bool session_reused;
+    /** 模组里存的 host/port/clientId 是否与**我们当前的身份**一致。
+     * @note 由 `MODEM_OP_MQTT_CFG_QUERY`（`AT+MQTTCFG?`）写入，`MODEM_OP_MQTT_STATE`
+     *   用它决定"状态 5 时能不能复用会话"：**必须一致才复用**，否则走完整重建，
+     *   否则 clientId 会停留在旧值（设备身份 `SN` 改过之后的具体后果）。
+     *   初值与失败值都是 `false`——"读不到就不复用"是安全方向。 */
+    bool remote_cfg_matches;
+    /** 公网可达性探测（`MODEM_OP_NET_PROBE_*`）里 `AT+NSOCR` 返回的 socket 编号。
+     * @note 为什么放在核心而不是后端：后端被要求「不持有静态状态」，所有跨步骤的
+     *   状态都由 ModemComponent 持有（见 modem_backend.h 的文件头约定）。探测是一组
+     *   四步的序列，后三步都要用这个编号，所以只能放这里。不探测时保持 0 且无意义。 */
+    uint8_t probe_socket;
     bool recover_done;
 
     /* --- 收发缓冲 --- */
@@ -146,6 +162,14 @@ typedef struct {
     ModemTopic reply_topic;
     uint8_t reply_qos;
     bool reply_pending;
+
+    /* --- 云端 AT 命令下行（平台规则 3.2 的 command 主题） ---
+     * NOTE (为什么由组件拆包、由 App 执行)：本组件不许访问参数存储或 QP，
+     *   所以它只把 `id` 与 `command` 两个字段原样取出来交给 App；执行与结果
+     *   由 App 层用统一命令分发器完成，再经 CompleteCommand() 回到这里发布。 */
+    char downlink_id[MODEM_COMPONENT_DOWNLINK_ID_MAX];
+    char downlink_command[MODEM_COMPONENT_DOWNLINK_COMMAND_MAX];
+    bool downlink_pending;   /*!< true = 有一条待 App 执行的命令 */
 
     /* --- 运行期状态 --- */
     ModemRuntimeOp runtime_op;
@@ -191,5 +215,38 @@ void Modem_Component_RequestLocation(ModemComponent *);
 
 /** @brief 是否已连上云端（可上报、可下发）。 */
 bool Modem_Component_IsReady(ModemComponent const *);
+
+/*------------------------------------------------ 云端 AT 命令下行（平台规则） */
+/** @brief 取走一条待执行的云端 AT 命令（`command` 主题）。
+ *
+ * @param me              组件实例
+ * @param id              出参：平台关联 ID（必须原样回显），可为 NULL
+ * @param idCapacity      id 的容量
+ * @param command         出参：AT 命令文本（**不含** CR/LF），可为 NULL
+ * @param commandCapacity command 的容量
+ * @return true = 取到一条命令并已清空待办标志；false = 当前没有待办命令
+ *
+ * @note 由 App 层在每次 `Modem_Component_Process()` 之后轮询调用。组件不会自己执行
+ *       命令（它不认识参数存储，也不允许依赖 QP）；执行完必须调用
+ *       `Modem_Component_CompleteCommand()` 回一条应答，否则平台侧会一直等。
+ * @note 缓冲不够时命令被丢弃并返回 false（平台允许 256 字节，本设备行上限见
+ *       `MODEM_COMPONENT_DOWNLINK_COMMAND_MAX`），此时 App 应回失败应答。
+ */
+bool Modem_Component_TakeCommand(ModemComponent *me,
+                                 char *id, size_t idCapacity,
+                                 char *command, size_t commandCapacity);
+
+/** @brief 发布一条 `command/reply`（平台规则 3.3 / 3.4）。
+ *
+ * @param me  组件实例
+ * @param id  平台关联 ID，原样回显
+ * @param ok  true = 成功回复（`ok:true` + `data`）；false = 失败回复（`ok:false` + `error` + `data`）
+ * @param raw 完整原始 AT 回复文本（含行尾；成功必须以 `OK\r\n` 结尾，失败必须以 `ERROR\r\n` 结尾）
+ *
+ * @note JSON 拼装（含转义）在组件内完成：App 只提供语义，不碰报文格式。
+ *       报文必须是单层 JSON，字段固定为 `id` / `ok` / `error` / `data`。
+ */
+void Modem_Component_CompleteCommand(ModemComponent *me, char const *id, bool ok,
+                                     char const *raw);
 
 #endif /* MODEM_COMPONENT_H */

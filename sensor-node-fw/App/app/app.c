@@ -15,8 +15,8 @@
 #include "ble.h"
 #include "modem.h"
 #include "store.h"
+#include "system.h"
 #include "bsp.h"
-
 /* 说明：本模块不展开任何 QP 断言宏（只用 QACTIVE_START，它在各 AO 的 _start()
 * 里），因此不需要 Q_DEFINE_THIS_MODULE，见 AGENTS.md 第 5.2 节。
 */
@@ -65,6 +65,9 @@ void App_start(void) {
     Node_ctor();
     Sensor_ctor();
     Heartbeat_ctor();
+    /* NOTE (AO_System)：只做"延迟复位"，构造顺序无关——它不读任何其它 AO 的数据，
+     * 只在自己收到请求后才去调它们的**只读**查询。 */
+    System_ctor();
 #if (APP_CFG_BLE_ENABLE != 0)
     Ble_ctor();
 #endif
@@ -77,6 +80,7 @@ void App_start(void) {
     Node_start();
     Sensor_start();
     Heartbeat_start();
+    System_start();
 #if (APP_CFG_BLE_ENABLE != 0)
     Ble_start();
 #endif
@@ -98,6 +102,8 @@ void App_start(void) {
 #if (APP_CFG_STORE_ENABLE != 0)
     BSP_print(" | store p6");
 #endif
+    /* AO_System 恒在（没有开关宏）：它只管延迟复位，不占外设、不占总线。 */
+    BSP_print(" | system p7");
     BSP_printLine("");
     BSP_printLine("boot ok");
 

@@ -7,8 +7,8 @@
 * 职责：
 *   - 调试串口 AT 命令行（标准 AT 形态，见 svc_at.h 与 06-协议格式.md）：
 *     `AT` 握手、`AT+<参数名>?` 读、`AT+<参数名>="<值>"` 写、`AT+<参数名>=?` 查最大长度、
-*     `AT+CFG?` 存储状态、`AT&F` 恢复默认值、`AT+I2C?` 扫描总线
-*     （解析在 Service 层 svc_at.c，执行与回复在本文件的 atExecute()）
+*     `AT+CFG?` 存储状态、`AT+VER?` 查询版本、`AT&F` 恢复默认值、`AT+I2C?` 扫描总线
+*     （解析在 Service 层 svc_at.c，执行与回复在本文件的 App_Command_Dispatch()）
 *   - 「中断 → 事件」通路的接收端：USART1 中断通过 Node_uartRxIsrSink()
 *     把字节放进 BSP 环形缓冲并投递 NODE_RX_BYTE_SIG
 *

@@ -9,13 +9,16 @@
 
  命令形态（标准 AT，见 App/service/svc_at.h 与 docs_sensor/06-协议格式.md）：
    AT                      握手                      -> OK
-   AT&F                    恢复编译期默认值并落盘      -> OK
-   AT+CFG?                 存储运行状态               -> +CFG:rdy,present,loaded,dirty,ver,seq,ok,fail
+   AT&F                    恢复编译期默认值并落盘      -> OK（**会把 SN 一起恢复**，产线慎用）
+   AT+CFG?                 存储运行状态               -> +CFG:rdy,present,loaded,dirty,ver,seq,ok,fail，随后 OK
+   AT+VER?                 查固件版本与编译日期        -> +VER:"<版本>","<编译日期>"，随后 OK
    AT+I2C?                 扫描 I2C 总线              -> OK，随后 +I2C:<地址>… +I2C:END
-   AT+<参数名>?            读参数                     -> +<参数名>:"<值>"
+   AT+<参数名>?            读参数                     -> +<参数名>:"<值>"，随后 OK
    AT+<参数名>="<值>"      写参数                     -> OK
-   AT+<参数名>=?           查最大长度                 -> +<参数名>:(<最大长度>)
+   AT+<参数名>=?           查最大长度                 -> +<参数名>:(<最大长度>)，随后 OK
    参数名：SN NAME PIN UUID DEVNAME MODEL BATCH；大小写不敏感，每个命令都要 CR/LF 结尾。
+   NOTE：读/测试/CFG/VER 类响应在参数行之后都带最终 OK（2026-09-27 统一），
+         脚本按行正则匹配，因此多出的 OK 行不影响判定，但肉眼看串口时应按此形态判读。
 
  为什么不只用串口助手：
    这一轮最贵的两个故障——「宏配了但没生效」与「回了 OK 却没落盘」——靠肉眼看
@@ -32,8 +35,16 @@
    # 追加无损写入测试：把当前 SN 原值再写一遍，验证「编码→页写→回读校验」整条路
    powershell -NoProfile -ExecutionPolicy Bypass -File sensor-node-fw\App\tools\at_smoke.ps1 -Port COM5 -WriteTest
 
-   # 有损：写入指定 SN（脚本会打印原值，便于还原）
+   # 有损：写入指定 SN（脚本会打印原值，便于还原）。
+   #      注意：身份参数写成功后**固件会自动重启**，脚本会等 `system: rebooting now`；
+   #      重启约需 11~20 s（4G 连接计划），之后请再跑一次只读检查确认新值已掉电保存。
    powershell -NoProfile -ExecutionPolicy Bypass -File sensor-node-fw\App\tools\at_smoke.ps1 -Port COM5 -WriteSn VWA2608A0020
+
+  SN 的写权限（2026-09-28）：
+   `SN` 是**身份参数**（平台主题里的 deviceId、蓝牙认证应答里的 sn），
+   **只允许串口写**；云端下发 `AT+SN="…"` 会被拒（`+CME ERROR:4`）。
+   串口写成功后固件会自动重启（值真的变了才重启，写原值不会），
+   以便新身份在下次上电时整体生效。
 
  退出码：0 = 全部检查通过；1 = 有检查失败或无法打开串口
 
@@ -302,7 +313,9 @@ try {
         @{ Cmd = 'AT+DEVNAME?';     Pat = '^\+DEVNAME:"';    Mask = $false },
         @{ Cmd = 'AT+MODEL?';       Pat = '^\+MODEL:"';      Mask = $false },
         @{ Cmd = 'AT+BATCH?';       Pat = '^\+BATCH:"';      Mask = $false },
-        @{ Cmd = 'AT+CFG?';         Pat = '^\+CFG:\d';       Mask = $false }
+        @{ Cmd = 'AT+CFG?';         Pat = '^\+CFG:\d';       Mask = $false },
+        @{ Cmd = 'AT+VER?';         Pat = '^\+VER:"';        Mask = $false },
+        @{ Cmd = 'AT+TRANSINTVL?';  Pat = '^\+TRANSINTVL:\d'; Mask = $false }
     )
     foreach ($r in $reads) {
         $line = Ask -Command $r.Cmd -Pattern $r.Pat
@@ -339,6 +352,18 @@ try {
             Check 'AT+CFG? 字段数为 8（位置式）' $false ('实际 ' + $fields.Count + ' 个：' + $cfgLine)
         }
     }
+
+    # 数值型业务参数 TRANSINTVL：测试形式报的是**范围**（1,20），不是字符数
+    $line = Ask -Command 'AT+TRANSINTVL=?' -Pattern '^\+TRANSINTVL:\(\d+,\d+\)$'
+    Check 'AT+TRANSINTVL=? 报告范围' ($null -ne $line) $line
+
+    # 越界必须被拒且**不改动当前值**。写 0 一定在合法范围 1~20 之外，
+    # 所以这一段即使在默认的只读模式下也是安全的（不会触发 EEPROM 写入）。
+    $before = Ask -Command 'AT+TRANSINTVL?' -Pattern '^\+TRANSINTVL:\d'
+    $line = Ask -Command 'AT+TRANSINTVL=0' -Pattern '^\+CME ERROR:2$'
+    Check 'AT+TRANSINTVL=0 被拒（+CME ERROR:2）' ($null -ne $line) $line
+    $after = Ask -Command 'AT+TRANSINTVL?' -Pattern '^\+TRANSINTVL:\d'
+    Check '越界后当前值未变' (($null -ne $before) -and ($before -eq $after)) ($before.ToString() + ' -> ' + $after.ToString())
 
     # 错误路径
     $line = Ask -Command 'NOTACMD' -Pattern '^(ERROR|\+CME ERROR:)'
@@ -387,33 +412,52 @@ try {
             $target = $orig
             if (-not [string]::IsNullOrWhiteSpace($WriteSn)) { $target = $WriteSn }
 
+            # 身份参数写成功后固件会**自动重启**（见 docs_sensor/06-协议格式.md）。
+            # 只有「值真的变了」才重启，所以 -WriteTest（写原值）不会重启。
+            $willReboot = ($target -ne $orig)
+
             $cmd = 'AT+SN="' + $target + '"'
             $line = Ask -Command $cmd -Pattern '^OK$'
             Check ($cmd + ' 被受理（回 OK）') ($null -ne $line) $line
+            if (($null -eq $line) -and [string]::IsNullOrWhiteSpace($WriteSn)) {
+                # -WriteTest 是把"当前值"再写一遍。当前值若不是合法设备号（未刷 SN，
+                # 或含 `/` `+` `#` 空格等非法字符），固件会回 +CME ERROR:2 拒写。
+                Warn '当前 SN 不是合法设备号（未刷或含非法字符）→ -WriteTest 被拒；请用 -WriteSn <合法设备号> 刷一个'
+            }
 
-            # 关键判读：OK 只代表「已受理」，落盘证据是下面这一行
-            $saved = Wait-Match -Pattern 'store:\s*saved' -Ms 4000
-            Check '落盘成功（store: saved …，含回读校验）' ($null -ne $saved) $saved
-
+            # 回读必须抢在重启前面：`AT+SN?` 读的是内存影子，写完立即是新值，
+            # 而复位最早也在 APP_CFG_SYSTEM_REBOOT_MIN_DELAY_MS（500 ms）之后。
             $line = Ask -Command 'AT+SN?' -Pattern '^\+SN:"'
             if ($null -ne $line) {
                 $now = Get-QuotedValue $line
                 Check ('影子里的新值（' + $now + '）') ($now -eq $target) $line
             }
 
-            $cfgLine = Ask -Command 'AT+CFG?' -Pattern '^\+CFG:'
-            if ($null -ne $cfgLine) {
-                $fields = $cfgLine.Substring(5).Split(',')
-                if ($fields.Count -eq 8) {
-                    Check 'AT+CFG? 显示 loaded=1、dirty=0' `
-                          (($fields[2] -eq '1') -and ($fields[3] -eq '0')) $cfgLine
+            # 关键判读：OK 只代表「已受理」，落盘证据是下面这一行
+            $saved = Wait-Match -Pattern 'store:\s*saved' -Ms 4000
+            Check '落盘成功（store: saved …，含回读校验）' ($null -ne $saved) $saved
+
+            if ($willReboot) {
+                $boot = Wait-Match -Pattern 'system:\s*rebooting now' -Ms 8000
+                Check '写身份参数后自动重启（system: rebooting now）' ($null -ne $boot) $boot
+                Write-Host ''
+                Write-Host '  设备正在重启：约 11~20 s 后重新上线（4G 连接计划）。' -ForegroundColor Yellow
+                Write-Host '  重启后再跑一次本脚本（不加 -WriteTest/-WriteSn），确认新值已掉电保存。' -ForegroundColor Yellow
+            }
+            else {
+                $cfgLine = Ask -Command 'AT+CFG?' -Pattern '^\+CFG:'
+                if ($null -ne $cfgLine) {
+                    $fields = $cfgLine.Substring(5).Split(',')
+                    if ($fields.Count -eq 8) {
+                        Check 'AT+CFG? 显示 loaded=1、dirty=0' `
+                              (($fields[2] -eq '1') -and ($fields[3] -eq '0')) $cfgLine
+                    }
                 }
             }
 
             if (-not [string]::IsNullOrWhiteSpace($WriteSn)) {
                 Write-Host ''
                 Write-Host ('要还原成原值，请再执行一次： -WriteSn ' + $orig) -ForegroundColor Yellow
-                Write-Host '（或发 AT&F 把全部参数恢复成编译期默认值）' -ForegroundColor Yellow
             }
         }
     }
@@ -443,7 +487,8 @@ Write-Host '  1) 若刚做过写入测试，先确认上面出现了 store: save
 Write-Host '  2) 拔掉板子电源等 3 秒再上电；'
 Write-Host '  3) 重跑一次本脚本（不加 -WriteTest）：AT+SN? 应等于刚才写入的值，'
 Write-Host '     且 AT+CFG? 的 loaded 字段=1、ver 不回退（说明读的是 EEPROM、不是默认值）。'
-Write-Host '  4) 要恢复出厂默认值：发 AT&F'
+Write-Host '  4) 要恢复出厂默认值：发 AT&F（**注意**：当前 AT&F 会把 SN 一起打回编译期默认值，'
+Write-Host '     产线上慎用；SN 的写权限与"改完自动重启"见 docs_sensor/06-协议格式.md）'
 
 if ($script:fail -gt 0) { exit 1 }
 exit 0

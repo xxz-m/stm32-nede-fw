@@ -1,27 +1,32 @@
-/*============================================================================
+﻿/*============================================================================
 * node.c —— 应用层：AO_Node 实现
 *
 * 层次定位：App 层。
+*
+* 目标硬件：STM32F103RCT6（LQFP64）· 调试口 USART1（PA9/PA10，115200 8N1）
+* 所属内核：QP/C 6.9.1 · QV（协作式、非抢占、单栈）
 *
 * 状态机（单状态）：
 *
 *   Node_state_Active —— 只做两件事：
 *     1) 抽干 BSP 环形缓冲里的接收字节，按行交给 AT 解析器；
-*     2) 把解析出的命令交给 atExecute() 生成响应，写进异步日志队列。
+*     2) 把解析出的命令交给 App_Command_Dispatch() 生成响应，写进异步日志队列。
 *
-* 命令语法与响应形态见 svc_at.h 的文件头与 docs_sensor/06-协议格式.md。
+* NOTE (职责边界)：本文件是**串口通道**，不是命令实现。它只负责「收字节 → 解析 →
+*   包成 AppCommandRequest → 输出 AppCommandResult.raw」，不认识任何具体命令。
+*   命令语义与响应格式在 App/app/command_dispatch.c；新增命令请改那里。
+*
+* 命令语法见 svc_at.h 的文件头，响应形态见 docs_sensor/06-协议格式.md。
 * 跨 AO 交互统一用全局段信号（SYS_SENSOR_*），并投递到 AO_Sensor 的队列。
 *===========================================================================*/
 #include "node.h"
 #include "app_signals.h"
 #include "app_prio.h"
-#include "app_config.h"
 #include "bsp.h"
-#include "sensor.h"
-#include "store.h"
 #include "svc_log.h"
+#include "app_command.h"
+#include "command_dispatch.h"
 
-#include <stdio.h>
 #include <string.h>
 
 /* 本模块在 QP 断言里的名字 */
@@ -77,137 +82,53 @@ static bool replyText(char *resp, size_t cap, char const *text) {
     return true;
 }
 
-/*..........................................................................*/
+/*--------------------------------------------------------------------------*/
 /**
-* @brief 把 AT 名转成大写写进 out（响应里的参数名一律大写，3GPP 惯例）。
-* @return false = 放不下（调用方按 ERROR 处理）
-*/
-static bool nameUpper(char *out, size_t cap, char const *name) {
-    size_t i;
+ * @brief 统一执行一条已经解析的串口 AT 命令。
+ *
+ * @param cmd 已解析的命令（来自 Service 层的 `SVC_At_Feed()`）
+ * @param resp 出参：响应缓冲（由本文件在栈上给出）
+ * @param cap  resp 的容量
+ * @return true = 已生成响应；false = 无人处理该命令（调用方按 ERROR 处理）
+ *
+ * NOTE (分层)：本函数只做「串口 → 统一模型 → 结果 → 串口」的搬运，**不认识任何具体命令**，
+ *   只负责把来源标成 `APP_COMMAND_SOURCE_SERIAL`。命令语义、响应形态与错误码全部在
+ *   `App/app/command_dispatch.c`；新增命令请改那里，**不要在本文件加 case**
+ *   （协议表见 docs_sensor/06-协议格式.md）。
+ */
+static bool executeCommand(SvcAtCmd const *cmd,
+                           char *resp,
+                           size_t cap) {
+    AppCommandRequest request;
+    AppCommandResult result;
 
-    for (i = 0U; name[i] != '\0'; ++i) {
-        if ((i + 1U) >= cap) {
-            return false;
-        }
-        out[i] = ((name[i] >= 'a') && (name[i] <= 'z'))
-                 ? (char)(name[i] - 'a' + 'A') : name[i];
+    if ((cmd == (SvcAtCmd const *)0) ||
+        (resp == (char *)0)) {
+        return false;
     }
-    out[i] = '\0';
-    return true;
+
+    (void)memset(&request, 0, sizeof(request));
+    request.source = APP_COMMAND_SOURCE_SERIAL;
+    request.command = *cmd;
+    request.has_correlation = false;
+
+    if (!App_Command_Dispatch(&request, &result)) {
+        return false;
+    }
+
+    if (result.raw[0] == '\0') {
+        return false;
+    }
+
+    return replyText(resp, cap, result.raw);
 }
 
 /*..........................................................................*/
 /**
-* @brief 执行一条已解析的 AT 命令并生成响应文本。
-*
-* NOTE (分层)：解析在 Service 层（svc_at.c），执行与回复在 App 层。
-*   参数写命令只更新内存影子并置 dirty，真正的落盘由 AO_Store 异步完成，
-*   因此这里**不会阻塞**——回 `OK` 表示「已受理」，落盘结果随后由日志给出。
-*
-* NOTE (响应形态，2026-09-27 改写)：按 V.250 / 3GPP 27.007 的常规形式：
-*   - 成功一律大写 `OK`（原先回小写 `ok`，与标准不符）
-*   - 读参数回 `+<NAME>:"<值>"`（字符串参数带引号）
-*   - 测试形式回 `+<NAME>:(<最大长度>)`
-*   - 查状态回**位置式** `+CFG:<8 个逗号分隔字段>`（原先回 `+cfg:key=value` 自造格式）
-*   - 失败回 `+CME ERROR:<n>`（原先回自造的 `+err:<n>`）
-*
-* @return true = 已生成响应（resp 有效）；false = 该命令在本层无人处理
-*/
-static bool atExecute(SvcAtCmd const *cmd, char *resp, size_t cap) {
-    int16_t id;
-
-    switch (cmd->kind) {
-        case SVC_AT_KIND_PING:
-            return replyText(resp, cap, "OK\r\n");
-
-        case SVC_AT_KIND_GET: {
-            char name[SVC_AT_NAME_MAX];
-
-            id = SVC_Param_Find(cmd->param);
-            if (id < 0) {
-                return replyText(resp, cap, "+CME ERROR:1\r\n");  /* 参数名不认识 */
-            }
-            if (!nameUpper(name, sizeof(name), SVC_Param_Name((uint8_t)id))) {
-                return false;
-            }
-            (void)snprintf(resp, cap, "+%s:\"%s\"\r\n",
-                           name, App_Store_Value((uint8_t)id));
-            return true;
-        }
-
-        case SVC_AT_KIND_TEST: {
-            char name[SVC_AT_NAME_MAX];
-
-            id = SVC_Param_Find(cmd->param);
-            if (id < 0) {
-                return replyText(resp, cap, "+CME ERROR:1\r\n");
-            }
-            if (!nameUpper(name, sizeof(name), SVC_Param_Name((uint8_t)id))) {
-                return false;
-            }
-            /* 容量含结尾 '\0'，因此可写的最大字符数是 cap - 1 */
-            (void)snprintf(resp, cap, "+%s:(%u)\r\n",
-                           name, (unsigned)(SVC_Param_Cap((uint8_t)id) - 1U));
-            return true;
-        }
-
-        case SVC_AT_KIND_SET: {
-            switch (App_Store_SetName(cmd->param, cmd->value)) {
-                case SVC_OK:        return replyText(resp, cap, "OK\r\n");
-                case SVC_ERR_PARAM: return replyText(resp, cap, "+CME ERROR:1\r\n");
-                case SVC_ERR_RANGE: return replyText(resp, cap, "+CME ERROR:2\r\n");
-                case SVC_ERR_STATE: return replyText(resp, cap, "+CME ERROR:3\r\n");
-                default:            return replyText(resp, cap, "ERROR\r\n");
-            }
-        }
-
-        case SVC_AT_KIND_INFO: {
-            AppStoreInfo info;
-            App_Store_Info(&info);
-            /* 字段顺序固定：rdy,present,loaded,dirty,ver,seq,ok,fail（只许在表尾追加） */
-            (void)snprintf(resp, cap, "+CFG:%u,%u,%u,%u,%u,%u,%lu,%lu\r\n",
-                           (unsigned)(info.resolved ? 1U : 0U),
-                           (unsigned)(info.present ? 1U : 0U),
-                           (unsigned)(info.loaded ? 1U : 0U),
-                           (unsigned)(info.dirty ? 1U : 0U),
-                           (unsigned)info.config_version,
-                           (unsigned)info.slot_seq,
-                           (unsigned long)info.saved,
-                           (unsigned long)info.failed);
-            return true;
-        }
-
-        case SVC_AT_KIND_DEFAULTS:
-            if (!App_Store_ResetDefaults()) {
-                return replyText(resp, cap, "+CME ERROR:3\r\n");   /* 存储还没就绪 */
-            }
-            return replyText(resp, cap, "OK\r\n");
-				case SVC_AT_KIND_VERSION:{
-						(void)snprintf(resp,cap,"+VER:\"%s\",\"%s\"\r\n",APP_CFG_FW_VERSION, APP_CFG_FW_BUILD_DATE);
-						return true;
-				}
-        case SVC_AT_KIND_SCAN:
-            /* 扫描结果不走本响应：它要跨十几拍总线，由 AO_Store 逐条以
-            * `+I2C:<地址>` 日志上报（见 store.c），这里只回「已受理」。 */
-            if (!App_Store_RequestScan()) {
-                return replyText(resp, cap, "+CME ERROR:5\r\n");   /* 已有扫描在跑 / 未就绪 */
-            }
-            return replyText(resp, cap, "OK\r\n");
-
-        default:
-            return false;
-    }
-}
-
-/*..........................................................................*/
-/**
-* @brief 行结束处理：整行交给 AT 解析器；不是 AT 命令则按 AT 惯例回 ERROR。
-*
-* NOTE (设计)：AT 指令按整行判定，匹配时只回响应，不回显输入字符；
-* 非 AT 输入在行结束时统一回 ERROR，避免逐字符回显把 AT 的 'A' 也打出来。
-*
-* @return true 表示该行被 AT 命令消费（已回复，不再回 ERROR）
-*/
+ * @brief 行结束处理：整行交给 AT 解析器；不是 AT 命令则按 AT 惯例回 ERROR。
+ *
+ * @return true 表示已生成响应；false 表示本行未被命令分发器处理。
+ */
 static bool atHandleLine(Node * const me, uint8_t term) {
     bool handled = false;
     char resp[SVC_AT_RESP_MAX];
@@ -216,45 +137,44 @@ static bool atHandleLine(Node * const me, uint8_t term) {
 
     for (i = 0U; i < me->lineLen; ++i) {
         if (SVC_At_Feed(&me->at, (uint8_t)me->lineBuf[i], &cmd) &&
-            atExecute(&cmd, resp, sizeof(resp))) {
+            executeCommand(&cmd, resp, sizeof(resp))) {
             LOG_WRITE(resp);
             handled = true;
         }
     }
-    if (SVC_At_Feed(&me->at, term, &cmd) && atExecute(&cmd, resp, sizeof(resp))) {
+
+    if (SVC_At_Feed(&me->at, term, &cmd) &&
+        executeCommand(&cmd, resp, sizeof(resp))) {
         LOG_WRITE(resp);
         handled = true;
     }
 
-    if (!handled) {
-        /* 不是 AT 指令：按 AT 惯例回 ERROR（空行静默，避免刷屏） */
-        if (me->lineLen > 0U) {
-            LOG_WRITE("ERROR\r\n");
-        }
+    if (!handled && (me->lineLen > 0U)) {
+        LOG_WRITE("ERROR\r\n");
     }
-    me->lineLen = 0U;
 
+    me->lineLen = 0U;
     return handled;
 }
 
 /*..........................................................................*/
 /**
-* @brief 处理一个接收字节。
-*
-* NOTE (设计)：调试串口只支持 AT 指令（见 06-协议格式.md）——
-*   行结束符   → 整行判定 AT：命中回 ok，未命中回 ERROR；
-*   可打印字符 → 存入行缓冲，等行结束统一处理；
-*   其他控制字节 → 直接回 ERROR（不解析、不回显）。
-*/
+ * @brief 处理一个接收字节。
+ *
+ * 行结束符交给 AT 解析器；可打印字符进入行缓冲；
+ * 其它控制字节直接返回 ERROR。
+ */
 static void handleByte(Node * const me, uint8_t b) {
     if ((b == (uint8_t)'\r') || (b == (uint8_t)'\n')) {
         (void)atHandleLine(me, b);
         return;
     }
+
     if ((b >= 0x20U) && (b < 0x7FU)) {
         linePut(me, b);
         return;
     }
+
     LOG_WRITE("ERROR\r\n");
 }
 
@@ -293,7 +213,9 @@ QState Node_state_Active(Node * const me, QEvt const * const e) {
             BSP_printLine("at console ready (line-based AT, CR/LF terminated)");
             BSP_printLine("params : AT+SN? read | AT+SN=\"<v>\" write | AT+SN=? max len");
             BSP_printLine("names  : SN NAME PIN UUID DEVNAME MODEL BATCH");
-            BSP_printLine("store  : AT+VER? |AT+CFG? status | AT&F defaults | AT+I2C? scan");
+            BSP_printLine("biz    : AT+TRANSINTVL? read | AT+TRANSINTVL=<1..20> min (saved)");
+            BSP_printLine("store  : AT+CMD? | AT+VER? | AT+CFG? status | AT&F defaults | AT+I2C? scan");
+            BSP_printLine("system : AT+RST | AT+REBOOT (reply OK first, then reset)");
 					
             status = Q_HANDLED();
             break;

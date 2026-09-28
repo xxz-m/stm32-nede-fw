@@ -101,4 +101,17 @@ bool App_Store_RequestScan(void);
 /*! 取运行状态快照。 */
 void App_Store_Info(AppStoreInfo *out);
 
+/*! 存储是否"已经没事干了"：可以安全复位。
+*
+* @return true = 启动加载已结束，且**没有未落盘的改动**，也没有正在进行的读写。
+*
+* NOTE (谁在用)：`AO_System` 在重启倒计时里等这个条件——复位会打断 EEPROM 写入，
+*   「`AT+TRANSINTVL=5` 紧接着 `AT+REBOOT`」必须等前者落完盘才允许复位。
+* NOTE (为什么不是只看 dirty)：dirty 是在 VERIFY 通过之后才清的，所以
+*   `!dirty` 已经蕴含「不在写」；这里再看一眼相位，是为了把"还没开始加载"的
+*   上电窗口也算成忙（那时改参数本来就会被拒），避免刚上电就被复位。
+* NOTE (存储关闭时)：`APP_CFG_STORE_ENABLE=0` 时永远返回 true（没有可丢的东西）。
+*/
+bool App_Store_IsIdle(void);
+
 #endif /* APP_STORE_H */

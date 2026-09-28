@@ -26,7 +26,8 @@ sensor-node-fw/
 ├── Drivers/                  <- CubeMX 管理（STM32F1 HAL + CMSIS，未改动）
 ├── Qpc/                      <- QP/C 6.9.1 源码（platform + QV 端口），见 Qpc/README.md
 ├── App/                      <- 自研代码，按分层建目录（CubeMX 不管理）
-│   ├── app/      应用层：装配点、全局配置、五个 AO（node/sensor/heartbeat/ble/modem）
+│   ├── app/      应用层：装配点、全局配置、五个 AO（node/sensor/heartbeat/ble/modem）、统一命令执行
+│   ├── app_command/ 可移植命令模型：来源、SvcAtCmd、关联 ID、统一结果
 │   ├── service/  服务层：AT、异步日志、滤波、CRC-16 组帧/解析
 │   ├── driver/   器件驱动层：传感器统一接口（当前为仿真数据源）
 │   ├── component/ 可移植通信组件：ble/（VG6328）与 modem/（三后端 + AT 引擎）
@@ -52,7 +53,7 @@ sensor-node-fw/
    - QP 钩子：`QF_onStartup()`、`QF_onCleanup()`、`QV_onIdle()`（里面只有 `QV_CPU_SLEEP()`，即 PRIMASK → WFI → 开中断）、`Q_onError()` / `Q_onAssert()`。
    - `HAL_UART_RxCpltCallback()` 位于 `bsp_uart.c`：重新武装接收并调用已注册的 sink；`Node_uartRxIsrSink()` 再把字节写入环形缓冲并投递事件。同文件的 `HAL_UART_TxCpltCallback()` / `HAL_UART_ErrorCallback()` 按 `huart->Instance` 分派给 BLE / 4G 端口，并**已补上 USART1 出错后的接收恢复**（2026-09-20）。
 4. `App/app/node.c`
-   - `Node` 是 AT-only 单状态 AO：收到 `NODE_RX_BYTE_SIG` 后抽干环形缓冲，`AT` 回复 `ok`，其他非空行回复 `ERROR`。
+   - `Node` 是 AT-only 单状态 AO：收到 `NODE_RX_BYTE_SIG` 后抽干环形缓冲，解析为 `SvcAtCmd`，构造串口来源的 `AppCommandRequest`，调用 `App_Command_Dispatch()`，再把 `AppCommandResult.raw` 写入异步日志队列。
 5. `App/app/app.c`
    - `App_start()` 注册 UART sink，构造并启动各 AO（本轮 node/sensor/heartbeat/ble 四个，modem 随 `APP_CFG_MODEM_ENABLE=0` 消失）；随后投递 `SYS_SENSOR_START_SIG`，让仿真采样上电自动运行。
 

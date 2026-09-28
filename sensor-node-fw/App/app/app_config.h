@@ -106,6 +106,19 @@
 /*! 滑动平均窗口长度 */
 #define APP_CFG_SENSOR_MAVG_LEN     (4U)
 
+/* 系统动作：延迟复位（AO_System）-------------------------------------------*/
+/*! 重启倒计时的检查周期（毫秒）。每拍只做几次只读判断，代价极低。 */
+#define APP_CFG_SYSTEM_PROCESS_PERIOD_MS    (100U)
+/*! 复位前的**最短**延时（毫秒）：给「命令回复出设备」留一个下限。
+*  串口的回复走异步发送环、4G 的回复要等 `AT+MQTTPUB` 与模组应答；
+*  这一段保证即使链路空闲判据一时看不出来，回复也有机会先出去。 */
+#define APP_CFG_SYSTEM_REBOOT_MIN_DELAY_MS  (500U)
+/*! 复位前的**硬上限**（毫秒）：到点无条件复位。
+*  NOTE (为什么必须有)：若 EEPROM 坏了导致 dirty 永远清不掉，或模组一直占着上行，
+*    「等条件满足」就退化成「永不重启」——一条 `AT+REBOOT` 能把设备卡到只能人工断电。
+*    5 s > 单条 AT 命令超时（3 s）+ 一次退避，足够回复出完。 */
+#define APP_CFG_SYSTEM_REBOOT_MAX_WAIT_MS   (5000U)
+
 /* 串口接收 -----------------------------------------------------------------*/
 /*! 接收环形缓冲大小（字节），拥有者是 BSP */
 #define APP_CFG_UART_RX_RING_SIZE   (64U)
@@ -117,6 +130,18 @@
 #define APP_CFG_BLE_BACKEND                   (APP_CFG_BLE_BACKEND_VG6328)
 /*! 组件内部诊断开关；仍受 APP_CFG_LOG_ENABLE/LEVEL 二次过滤。 */
 #define APP_CFG_BLE_TRACE_ENABLE              (1U)
+/*! 1 = 把**模组发来的每一行**原样打进日志（含 `+CONNECT-` / `+DISCONNECT-` 等通知）。
+*
+*  NOTE (为什么需要它，2026-09-28)：与 4G 侧的 `APP_CFG_MODEM_TRACE_URC` 同款用途。
+*    BLE 侧此前没有这个开关，而 `BLE_Protocol_Line()` 对认不出的行是**静默丢弃**的，
+*    于是现场无法区分这两种完全不同的情况：
+*      ① 手机压根没连上（模组一个字都没说）；
+*      ② 连上了、模组也说话了，但那条通知我们不认识。
+*    用户 2026-09-28 报的「扫描能看到、连不上、串口也没有任何日志」正需要它来分辨。
+*  NOTE (凭据纪律)：含 `{` 的行（小程序的 JSON 载荷）**一律不打**——auth 请求里带 PIN。
+*    模组自己的 AT 行不含凭据，可以整行打。
+*  NOTE (排障完请改回 0)：它会持续刷屏（连接期每一步模组应答都打一行）。 */
+#define APP_CFG_BLE_TRACE_RX                  (1U)
 
 /*! 占用哪一路 USART（1/2/3 = USART1/2/3，与 BSP 的 bsp_uart_id_t 取值一致）。
 *  NOTE (2026-09-20 对调)：BLE 原先占 USART3，按实机接线改为 **USART2（PA2/PA3）**；
@@ -191,6 +216,11 @@
 #endif
 /*! 组件内部诊断开关；仍受 APP_CFG_LOG_ENABLE/LEVEL 二次过滤。 */
 #define APP_CFG_MODEM_TRACE_ENABLE            (1U)
+/*! 临时诊断（2026-09-27）：把模组**发来**的 `+MQTT*` 行原样打进日志。
+*  用途：确认 MN316 下行通知的真实名称与主题字符串——组件对认不出的行是**静默丢弃**的，
+*  所以「日志里什么都没有」并不能证明消息没到模组，必须把原始行打出来才能判断。
+*  NOTE (用完请改回 0)：这是排障开关，下行通道确认打通后关掉，否则连接期会持续刷屏。 */
+#define APP_CFG_MODEM_TRACE_URC               (1U)
 
 /*! 平台 UART 与 BSP 环形缓冲（尺寸须为 2 的幂，BSP 用掩码取模）。 */
 /*! 占用哪一路 USART（1/2/3 = USART1/2/3）；与 APP_CFG_BLE_UART_ID 一起构成装配信息。 */
@@ -223,6 +253,45 @@
 #define APP_CFG_MODEM_TOPIC_SIZE               (128U)
 #define APP_CFG_MODEM_CELL_FIELD_SIZE          (12U)
 #define APP_CFG_MODEM_TOKEN_SIZE               (24U)
+
+/*! MQTT 主题前导 `/`：**一条主题一个宏**，取值只能是 `""` 或 `"/"`。 --------------------
+*
+*  NOTE (为什么逐条给，而不是按收发方向，2026-09-28 订正)：平台侧有**两个互不相干的主题
+*   空间**，'/' 的归属由**主题用途**决定，与收/发方向无关：
+*     - **数据上报空间**：属性上报页原文要求设备发布到
+*       `/{productId}/{deviceId}/properties/report`（**带** '/'）——给平台画卡片与折线用；
+*     - **命令/属性交互空间**：平台的「AT 控制主题模板」`{productId}/{deviceId}/command` 与
+*       「回复主题模板」`{productId}/{deviceId}/command/reply`（**都不带** '/'）——命令与它的
+*       回复在**同一格**里闭环。
+*   把它当成"发布方向统一带 '/'"就会给 `command/reply` 多加一个 `/`：`#58`→`#62` 的反复就是
+*   这么来的，实测症状是平台上停在 `MQTT_PUBLISHED · WAITING_RESPONSE`、**20 s 判"指令超时"**
+*   （见 [[08-改动日志]] `#64`）。
+*
+*  NOTE (怎么改)：**平台单独要求哪一条换形态，就改哪一行**，不必碰 `modem_component.c`——
+*   组件里的 `kTopicPrefix[]` 表与这 10 个宏**一一对应**（顺序 = 主题枚举顺序），并有编译期
+*   护栏：每个宏的串长必须 ≤ 1 字符，写成别的直接编译报错。
+*   拼法：`前缀 + <productId>/<deviceId> + 后缀`；后缀在 `kTopicSuffix[]`（自带 device 之后那个 `/`）。 */
+#define APP_CFG_MODEM_TOPIC_PREFIX_REPORT         "/"  /* → /<pid>/<did>/properties/report  数据上报 */
+#define APP_CFG_MODEM_TOPIC_PREFIX_READ           "/"   /* → <pid>/<did>/properties/read     读属性   */
+#define APP_CFG_MODEM_TOPIC_PREFIX_READ_REPLY     "/"   /* → <pid>/<did>/properties/read/reply       */
+#define APP_CFG_MODEM_TOPIC_PREFIX_WRITE          "/"   /* → <pid>/<did>/properties/write    写属性   */
+#define APP_CFG_MODEM_TOPIC_PREFIX_WRITE_REPLY    "/"   /* → <pid>/<did>/properties/write/reply      */
+#define APP_CFG_MODEM_TOPIC_PREFIX_INVOKE         "/"   /* → <pid>/<did>/function/invoke     功能调用 */
+#define APP_CFG_MODEM_TOPIC_PREFIX_STATE          "/"   /* → <pid>/<did>/state-check         状态查询 */
+#define APP_CFG_MODEM_TOPIC_PREFIX_STATE_REPLY    "/"   /* → <pid>/<did>/state-check/reply           */
+#define APP_CFG_MODEM_TOPIC_PREFIX_COMMAND        "/"   /* → <pid>/<did>/command             AT 命令  */
+#define APP_CFG_MODEM_TOPIC_PREFIX_COMMAND_REPLY  "/"   /* → <pid>/<did>/command/reply       AT 回复  */
+/*! 云端 AT 命令下行（平台规则 3.2 的 `command` 主题）的字段缓冲。
+*
+*  NOTE (command 为什么不是平台允许的 256)：本设备 AT 行的上限是 `APP_CFG_AT_LINE_MAX`（64），
+*  超长命令永远解析不出来，先存下来再丢只是白占 RAM。超限时直接回一条失败应答。
+*
+*  NOTE (id 取 64 的实测依据，2026-09-27)：平台真实下发的是 `cmd-at-<uuid>`，
+*  例如 `cmd-at-d92b9f55-f96e-48ee-8fd1-dc3209db790e` —— **43 个字符**。
+*  原定 48 只剩 4 字节余量，平台换个前缀就会静默变成「取不到 id → 回空 id 的失败应答」，
+*  因此放大到 64，与 `APP_COMMAND_CORRELATION_MAX` 取齐（代价仅 16 字节 bss）。 */
+#define APP_CFG_MODEM_DOWNLINK_ID_SIZE         (64U)
+#define APP_CFG_MODEM_DOWNLINK_COMMAND_SIZE    (96U)
 /*! 单次 Process 最多读取的串口字节数（防止一次事件里长时间占着 QV）。 */
 #define APP_CFG_MODEM_RX_BUDGET                (64U)
 
@@ -251,14 +320,95 @@
 #define APP_CFG_MODEM_REBOOT_SETTLE_MS         (20000U)
 /*! MN316 打开 MQTT / 等连接状态就绪 / 等订阅确认的超时。 */
 #define APP_CFG_MODEM_MQTT_OPEN_TIMEOUT_MS     (60000U)
+/*! MQTT 状态查询（`AT+MQTTSTAT?`）的总等待预算。
+*  NOTE (2026-09-27)：手册（MN316 MQTT 用户手册 §2.3，第 12 页）里状态 3/4/6/7 分别是
+*  「发送 Connect 包等 ack」「正在重连服务器」「建立 TCP 连接中」「TCP 连接已建立」——
+*  这些**都是连接正在路上**，不是失败。本宏是「等它走完」的时间上限：到期仍未到 5，
+*  才放弃等待、按未连接处理。 */
 #define APP_CFG_MODEM_MQTT_STATE_TIMEOUT_MS    (30000U)
+/*! 状态查询的重问间隔；太小会刷屏，太大会错过状态跃迁。 */
+#define APP_CFG_MODEM_MQTT_STATE_POLL_MS       (2000U)
 #define APP_CFG_MODEM_TOPIC_TIMEOUT_MS         (20000U)
+/*! MQTTCFG 成功后给模组内部资源释放与参数生效的非阻塞稳定等待。 */
+#define APP_CFG_MODEM_MQTT_OPEN_SETTLE_MS      (2000U)
+/*! MQTTOPEN 明确失败后的退避重试间隔，避免每个 Process 周期立即重发。 */
+#define APP_CFG_MODEM_MQTT_OPEN_RETRY_MS       (5000U)
+/*! MQTTOPEN 最多尝试次数（含第一次）。 */
+#define APP_CFG_MODEM_MQTT_OPEN_ATTEMPTS       (3U)
+/*! MQTT 拆除（`AT+MQTTDISC` / `AT+MQTTDEL`）遇到 8002 时的重试间隔。
+*  NOTE (2026-09-27)：手册（MN316 AT 命令用户手册 §11.1，第 132 页）把 8002 定义为
+*  「操作不允许，通常为状态机不符合」——即刚断开、模组还没释放完，**等一会儿再发就好**。
+*  原先把它写成 tolerate（一步放行），会跳过本步所有重试，等于在模组没准备好的时候
+*  直接进入 `AT+MQTTCFG`。 */
+#define APP_CFG_MODEM_MQTT_TEARDOWN_RETRY_MS   (1000U)
+/*! 两条 AT 命令之间的最小非阻塞间隔。
+*  NOTE (2026-09-27)：手册（MN316 通信流程示例，第 16 页）原文要求
+*  「每次只能发送单个 AT 命令，只有前一个 AT 命令执行完毕，才能执行下一个 AT 命令」。
+*  本工程原来是「收到上一条 OK 的同一个 Process 周期内就写下一条」，中间零间隔，
+*  正是手册里 `+CME ERROR:8007`（AT 通道忙，上一条 AT 请求尚未处理完）的成因。
+*  留一小段静默时间给模组收尾，代价是整条计划慢几秒。 */
+#define APP_CFG_MODEM_AT_GAP_MS                (200U)
+
+/*! 公网可达性探测（裸 TCP，只读诊断） ------------------------------------------
+*  NOTE (为什么要有它，2026-09-27)：三张卡里移动那张稳定连上、两张电信卡一律倒在
+*  `AT+MQTTOPEN`。而 `+MQTTOPEN:FAIL` 的手册定义只有一句「连接服务器失败」，区分不了
+*  「这张卡根本出不了公网」与「只是连不上我们这台服务器」。本组步骤用模组自带的裸
+*  TCP 去连一个**与业务无关**的公网地址，把这两件事分开。
+*  NOTE (判据)：`AT+NSOCO` 回 OK **只表示「开始连接」**（手册原文「命令解析正确，开始
+*  连接远程服务器」）；真正的证据是 `AT+NSOSD`（**发送 TCP 数据**，AT 命令手册 §5.6）
+*  之后收到 `+NSOSTR`——手册批注「发送成功并**收到对方 ACK**」。所以成功标记取
+*  `+NSOSTR`，不是 OK。
+*  NOTE (命令名别写错，2026-09-27 已踩过)：是 `AT+NSOSD`，**不是** `AT+NSOD`。
+*  《MN316_通信流程示例》第 22 页的示例把它写成了 `AT+NSOD`，那是笔误；模组没有这条
+*  命令，发错会立刻回 `+CME ERROR:4`（不支持的操作），看着非常像「连不上」。 */
+/*! 1 = 在连接计划里插入这四步探测；**0 = 整组从计划表里去掉**（不是「跳过」：
+*  计划表用 #if 包住这四行，所以 `plan_count` 与 `step k/N` 的编号完全回到
+*  未加探测时的那张表（当前 **23 步**），行为与加它之前一模一样）。详见 modem_mn316.c 里的 NOTE。
+*  2026-09-27 结案后已置 0（结论：电信卡侧限制，见改动日志 #45）；以后再遇到
+*  「某张卡连不上」时把它改回 1 即可复用这套对照方法。 */
+#define APP_CFG_MODEM_NET_PROBE_ENABLE         (0U)
+/*! 探测目标。默认阿里 DNS 的 53 端口——国内一定可达，且与业务服务器无关。
+*  想验证「能不能连上我们自己的服务器」时，把这里换成该服务器的 IP 与端口。 */
+#define APP_CFG_MODEM_NET_PROBE_HOST           "223.5.5.5"
+#define APP_CFG_MODEM_NET_PROBE_PORT           (53U)
+/*! 本端监听端口（AT+NSOCR 的 <listen port>）。换一个不与别处冲突的值即可。 */
+#define APP_CFG_MODEM_NET_PROBE_LOCAL_PORT     (6003U)
+/*! 连上之后留给模组建链的时间（毫秒）：`AT+NSOCO` 只表示「开始连」，必须等一会儿
+*  再发 `AT+NSOSD`，否则数据发不出去（手册要求先保证连接成功）。 */
+#define APP_CFG_MODEM_NET_PROBE_SETTLE_MS      (3000U)
+/*! 探测步骤的应答超时（毫秒）。 */
+#define APP_CFG_MODEM_NET_PROBE_TIMEOUT_MS     (10000U)
+/*! `AT+NSOSD` 的重试次数与间隔：TCP 在 NB-IoT 上建链慢，头几次发不出去是正常的，
+*  所以给几次重发机会；`+NSOSTR` 一旦回来就是成功。 */
+#define APP_CFG_MODEM_NET_PROBE_SEND_ATTEMPTS  (3U)
+#define APP_CFG_MODEM_NET_PROBE_SEND_RETRY_MS  (3000U)
+/*! `AT+NSOCL` 的重试次数与间隔。实测连不上目标时 socket 会卡在 connecting，
+*  关闭也会被回 `+CME ERROR:8002`；多试几次给模组内部超时留出释放时间，
+*  否则每轮连接计划漏一个 socket，两轮之后 NSOCR 就会失败（模组只有 2 个名额）。 */
+#define APP_CFG_MODEM_NET_PROBE_CLOSE_ATTEMPTS (4U)
+#define APP_CFG_MODEM_NET_PROBE_CLOSE_RETRY_MS (2000U)
 /*! 连接失败后 AO 的重连节奏。 */
 #define APP_CFG_MODEM_CONNECT_ATTEMPTS         (3U)
 #define APP_CFG_MODEM_RECONNECT_PERIOD_S       (10U)
 /*! 在线期周期。 */
-#define APP_CFG_MODEM_REPORT_PERIOD_S          (1200U)
+/*! 业务参数 `TRANSINTVL`：周期上报间隔（分钟），1~20，出厂默认 20。 ---------------
+*  NOTE (单一真相，2026-09-28)：设备**实际上报周期**由参数存储里的 `transintvl` 决定
+*   —— `AO_Modem` 每个 Process 周期从参数影子读一次（`App_Store_Value()`），因此
+*   「改完立即生效」且掉电保持（参数表见 `App/service/svc_param.c`）。
+*   旧的云属性通道 `sample_interval`（见下面那组 1~1440 的宏）自本轮起**不再驱动周期**，
+*   只保留「读回来核对」的作用：写它不会改变上报节奏。 */
+#define APP_CFG_MODEM_TRANS_INTERVAL_MIN          (1U)
+#define APP_CFG_MODEM_TRANS_INTERVAL_MAX          (20U)
+#define APP_CFG_MODEM_TRANS_INTERVAL_DEFAULT      (20U)
+/*! 参数表的编译期默认值（`SVC_Param` 的 desc 表只接字符串）。
+*  NOTE (必须与 _DEFAULT 同步)：两个宏要一起改，否则「介质空白时读到的默认值」与
+*   「范围回落值」会给出两个不同的数。 */
+#define APP_CFG_MODEM_TRANS_INTERVAL_DEFAULT_TEXT "20"
+/*! 默认上报周期（秒）：由 `TRANSINTVL` 的出厂默认值换算，只给 `ModemConfig.report_period_s`
+*  用。组件里那份 `report_period_ms` 是信息性的，真正的节奏由参数影子决定。 */
+#define APP_CFG_MODEM_REPORT_PERIOD_S          (APP_CFG_MODEM_TRANS_INTERVAL_DEFAULT * 60U)
 #define APP_CFG_MODEM_CELL_REFRESH_PERIOD_S    (60U)
+/*! 旧云属性通道 `sample_interval` 的范围；该通道已降级为只读镜像（去留待平台确认）。 */
 #define APP_CFG_MODEM_SAMPLE_INTERVAL_MIN      (1U)
 #define APP_CFG_MODEM_SAMPLE_INTERVAL_MAX      (1440U)
 
@@ -288,7 +438,21 @@
 #define APP_CFG_MODEM_HOST                     "www.xiaoqingchong.com"
 #define APP_CFG_MODEM_PORT                     (48040U)
 #define APP_CFG_MODEM_PRODUCT_ID               "sensor-product"
-#define APP_CFG_MODEM_DEVICE_ID                "869413084698153"
+/*! 设备标识（MQTT `clientId` 与主题里的 `deviceId`）：**不再用编译期宏**，见下。
+*
+*  NOTE (为什么删掉 `APP_CFG_MODEM_DEVICE_ID`，2026-09-28)：它原先是写死的
+*    `"869413084698157"`——那是**某一台模组的 IMEI**。一旦 `deviceId` 参与主题拼装，
+*    写死就等于**所有设备共用同一个身份**：同一批设备同时上线会因 `clientId` 相同而
+*    互相顶掉（MQTT 后到者踢掉先到者），平台侧表现为"设备随机掉线、数据归属混乱"。
+*    现在 `deviceId` 取自参数 `sn`（产线用串口刷写、掉电保存），因此**一份固件即可跑所有设备**。
+*    取值点：`App/app/modem.c` 的 `Modem_ctor()` → `App_Store_Value(SVC_PARAM_BLE_SN)`；
+*    合法性判据：`SVC_Param_IsValidDeviceId()`（命令层写入与 4G 启动共用同一个函数）。
+*  NOTE (未配置就不上线)：`sn` 为空、含非法字符、或仍是出厂默认值（= 产线没刷）时，
+*    `AO_Modem` **拒绝启动 4G** 并在串口打出 `device SN unusable …` 告警。
+*    这是故意的：非法值拼出的 `sensor-product//command` 在 MQTT 里**是合法主题**，
+*    模组订阅还会回 `+MQTTSUBACK`，只是永远收不到平台消息（与 `#51` 同类静默故障）。
+*  NOTE (平台侧必须同步)：平台侧那台设备的 `deviceId` 必须与设备 `SN` **逐字一致**
+*    （含大小写），否则本设备订的主题平台不认——同样是"订阅成功但没反应"。 */
 #define APP_CFG_MODEM_USERNAME                 "jetlinks0621"
 #define APP_CFG_MODEM_PASSWORD                 "jetlinks0621"
 #define APP_CFG_MODEM_KEEP_ALIVE_S             (60U)

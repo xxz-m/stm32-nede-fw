@@ -44,13 +44,14 @@
 ```
 E:\stm32\sensor-node-fw\
 ├── AGENTS.md                        本文件：工作区约束入口
-├── docs_sensor\                     工程文档集（00-索引.md 为入口，01..08，含 08-改动日志）
+├── docs_sensor\                     工程文档集（00-索引.md 为入口，01..11，含 08-改动日志）
 ├── sensor-node-fw\                  ★ 主工程（STM32CubeMX + QP/C 6.9.1 QV）
 │   ├── sensor-node-fw.ioc           CubeMX 配置（时钟/外设/NVIC/时基）
 │   ├── Core\                        CubeMX 生成（启动、中断、HAL 时基、外设初始化）
 │   ├── Drivers\                     STM32F1 HAL + CMSIS（厂商层）
 │   ├── App\                         ★ 自研代码，按分层建目录，CubeMX 不会动
-│   │   ├── app\        App 应用层：app.c（装配点 App_start）· app_signals.h（信号分段）· app_prio.h（优先级）· node.*（控制台/AT 命令）· sensor.*（采样 AO）· ble.*（AO_Ble）· modem.*（AO_Modem）· store.*（AO_Store，掉电参数存储）
+│   │   ├── app\        App 应用层：app.c（装配点 App_start）· command_dispatch.*（统一命令执行）· app_signals.h（信号分段）· app_prio.h（优先级）· node.*（控制台/AT 通道）· sensor.*（采样 AO）· ble.*（AO_Ble）· modem.*（AO_Modem）· store.*（AO_Store，掉电参数存储）
+│   │   ├── app_command\ 可移植命令模型：app_command.h（来源、SvcAtCmd、关联 ID、统一结果）
 │   │   ├── service\    Service 服务层：svc_filter.*（中值/滑动平均）· svc_frame.*（CRC-16/组帧/解析）· svc_at.*（AT 解析）· svc_log.*（异步日志）· svc_param.*（参数记录编解码）
 │   │   ├── driver\     Driver 器件驱动层：drv_types.h（层公共状态码）· drv_sensor.*（统一传感器接口，当前为仿真数据源）· drv_at24c04.*（AT24C04 非阻塞驱动）
 │   │   ├── component\  可移植通信组件：业务核心 + 可替换芯片后端，禁止依赖 HAL/QP/RTOS
@@ -100,7 +101,8 @@ E:\stm32\sensor-node-fw\
 - **不引入新框架**：不引入 RTOS、不使用第二个事件框架；新增第三方库必须先在 `ThirdParty/README.md` 登记来源/版本/许可，并说明体积与用途。
 - **不改 `Qpc/` 里的 QP 源码**，除非是为解决编译器兼容问题；每处改动必须带 `NOTE (...)` 注释，并在 `Qpc/README.md` 的改动表登记。注意 QP/C 为 GPLv3 / 商业双许可，闭源产品需另行购买商业许可。
 - **新增/删除源文件后必须同步 MDK 工程分组**——跑一次 `apply_qp_to_keil.ps1` 即可（自动发现）；漏加时编译不报错，只在链接期以“符号未定义”暴露。
-- 当前工作区**没有初始化 git**。建议初始化，并在首个提交前写好 `.gitignore`（排除 `MDK-ARM/Objects`、`Listings`、`*.uvguix.*`、`*.uvoptx`、`DebugConfig`、`RTE`、`Drivers/CMSIS/DSP` 等）。
+- git **已初始化**（2026-09-28 订正；本条此前写的是"没有初始化"）：分支 `master`，`.gitignore` 已就位（含 `MDK-ARM/Objects`、`Listings`、`*.uvguix.*`、`*.uvoptx`、`DebugConfig`、`RTE`、`Drivers/CMSIS/DSP`、PDF 插件产物 `**/*-pages/`）。
+  ⚠️ **`origin` 指向公开仓库**（`https://github.com/xxz-m/stm32-nede-fw`，2026-09-28 未登录访问返回 200 确认）：**任何 push 前先确认没有凭据入包**。当前 `App/app/app_config.h` 含明文 4G 凭据且**已随 `738aef8` 推送**，处置方案见 [[docs_sensor/08-改动日志]] `#74`——在凭据轮换完成前**不要 push，也不要把它加入任何公开仓库**（与第 4.2 节的凭据纪律冲突，见该条）。
 - 原则上禁止把密钥、证书、上位机私有协议原文、个人隐私数据写入仓库。
   **唯一例外（已登记）**：4G 设备云端凭据（`APP_CFG_MODEM_HOST/PORT/PRODUCT_ID/DEVICE_ID/USERNAME/PASSWORD`）经用户于 2026-09-15 明确确认，允许直接存入 `App/app/app_config.h`；明文风险已知悉，须同时遵守三条纪律：①`app_config.h` 不得进入任何公开仓库，也不得对外分发；②日志、断言、错误路径一律不打印用户名与密码（ASCII 日志同样适用）；③给第三方构建时用编译期覆盖（`-DAPP_CFG_MODEM_*` 或本地未入库头文件）替换，不改源码。此例外仅限上述 6 个宏，扩大到其他凭据须重新登记。
 
@@ -113,6 +115,7 @@ E:\stm32\sensor-node-fw\
 | 层 | 目录 | 能依赖谁 |
 |---|---|---|
 | App 应用层 | `App/app/` | Service、Driver、BSP、Qpc |
+| 命令模型层 | `App/app_command/` | Service 中的 `svc_at.h`；不得访问 Store、QP 或硬件 |
 | Service 服务层 | `App/service/` | Driver、BSP、ThirdParty |
 | Driver 器件驱动层 | `App/driver/` | BSP、ThirdParty |
 | 可移植组件层 | `App/component/` | 仅标准 C 与调用方注入的 Port 函数表；由 App 层调用 |

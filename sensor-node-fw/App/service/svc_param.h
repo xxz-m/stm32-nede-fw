@@ -45,14 +45,22 @@
 #include "svc_frame.h"      /* svc_status_t 与 SVC_Frame_Crc16() */
 
 /* 参数项（顺序即记录里的字段顺序；增删请只在表尾追加） ----------------------*/
+/*! NOTE (记录不只是蓝牙参数，2026-09-28)：前 7 项是 BLE 身份参数（历史命名保留
+*   `BLE_` 前缀），第 8 项起是**设备业务参数**。记录格式对两者完全一样：「1 B id +
+*   1 B 长度 + 文本值」，因此追加业务参数不需要改编解码，旧记录缺字段时该字段保持默认值。 */
+/*! NOTE (命名是历史遗留，2026-09-28)：前 7 项的名字带 `BLE_` 前缀，但 `SVC_PARAM_BLE_SN`
+*   自 2026-09-28 起是**设备身份**（MQTT `clientId`/主题里的 `deviceId` + 蓝牙认证应答里的
+*   `sn`），不再只是蓝牙参数。名字保留是为了不动 EEPROM 里的字段顺序（记录按 id 编码），
+*   语义以本条与 `SVC_Param_IsValidDeviceId()` 为准。 */
 typedef enum {
-    SVC_PARAM_BLE_SN = 0,   /*!< 蓝牙串号（也会写进模组的本地名）  */
+    SVC_PARAM_BLE_SN = 0,   /*!< **设备序列号**（产线串口刷；平台 deviceId 与蓝牙 sn 共用）*/
     SVC_PARAM_BLE_NAME,     /*!< 蓝牙广播名                        */
     SVC_PARAM_BLE_PIN,      /*!< 小程序认证 PIN（凭据，注意纪律）  */
     SVC_PARAM_BLE_UUID,     /*!< Service UUID                      */
     SVC_PARAM_BLE_DEVNAME,  /*!< 设备名                            */
     SVC_PARAM_BLE_MODEL,    /*!< 型号代号                          */
     SVC_PARAM_BLE_BATCH,    /*!< 批次代号                          */
+    SVC_PARAM_TRANSINTVL,   /*!< 周期上报间隔，分钟（1~20，业务参数）*/
     SVC_PARAM_COUNT         /*!< 项数（不是合法 id）               */
 } SvcParamId;
 
@@ -65,6 +73,11 @@ typedef enum {
 #define SVC_PARAM_BLE_DEVNAME_CAP   (24U)
 #define SVC_PARAM_BLE_MODEL_CAP     (16U)
 #define SVC_PARAM_BLE_BATCH_CAP     (16U)
+/*! `TRANSINTVL`：文本存的是十进制分钟数，最长「20」= 2 字符，留到 3 位有余量。
+*  NOTE (为什么按文本存)：与其余字段走同一套编解码（1 B id + 1 B 长度 + 值），
+*   不引入新的字段类型；数值范围由命令层（`command_dispatch.c`）与使用方
+*   （`modem.c` 读回来时再夹一次）各自校验。 */
+#define SVC_PARAM_TRANSINTVL_CAP    (4U)
 
 /*! RAM 影子里每个字段的定长容量。取「最大字段容量」，实现最简单（不做偏移运算），
 * 代价是 7×40 = 280 B 的 RAM —— 对 48 KB 的 F103RC 可以接受。 */
@@ -81,14 +94,15 @@ typedef enum {
 #define SVC_PARAM_FLAG_USER_WRITTEN (0x01U)
 
 /*! 记录最大长度：头 + 各字段(1 B id + 1 B len + 值) + CRC。
-* 当前字段容量下为 177 B，必须小于 app_config.h 里两个槽的间距（256 B），
+* 当前字段容量下为 **182 B**，必须小于 app_config.h 里两个槽的间距（256 B），
 * 否则第二条记录会压到第一条上。 */
 #define SVC_PARAM_RECORD_MAX                                                 \
     (SVC_PARAM_HDR_SIZE + SVC_PARAM_CRC_SIZE +                               \
      (2U + SVC_PARAM_BLE_SN_CAP - 1U) + (2U + SVC_PARAM_BLE_NAME_CAP - 1U) + \
      (2U + SVC_PARAM_BLE_PIN_CAP - 1U) + (2U + SVC_PARAM_BLE_UUID_CAP - 1U) +\
      (2U + SVC_PARAM_BLE_DEVNAME_CAP - 1U) +                                 \
-     (2U + SVC_PARAM_BLE_MODEL_CAP - 1U) + (2U + SVC_PARAM_BLE_BATCH_CAP - 1U))
+     (2U + SVC_PARAM_BLE_MODEL_CAP - 1U) + (2U + SVC_PARAM_BLE_BATCH_CAP - 1U) + \
+     (2U + SVC_PARAM_TRANSINTVL_CAP - 1U))
 
 /*! 参数集合的 RAM 影子。由 App 层持有（本模块不定义全局变量）。 */
 typedef struct {
@@ -155,5 +169,55 @@ bool SVC_Param_ParseHeader(uint8_t const *hdr, size_t len, SvcParamHeader *out);
 
 /** @brief 槽序号比较（回绕安全）：a 是否比 b 新。 */
 bool SVC_Param_SeqNewer(uint8_t a, uint8_t b);
+
+/** @brief 把「十进制文本」解析成无符号整数（数值型参数共用）。
+*
+* @param text 待解析文本（如 `"20"`）
+* @param out  出参：解析结果（仅成功时写入）
+* @return true = 全部字符都是 0~9 且至少 1 位、最多 9 位、无溢出
+*
+* NOTE (为什么要一个共用的解析)：`TRANSINTVL` 在**命令层**（写入时校验范围）与
+*   **使用方**（`modem.c` 每个周期读回来换算）都要把影子里的文本变成数字。
+*   两处各写一份解析必然出现「一边收紧、一边放宽」的偏差，所以放在 Service 层共用。
+* NOTE (为什么不用 `strtoul`)：它接受前导空白、正负号与 `0x` 前缀，还会设置 `errno`；
+*   参数值只可能是纯数字，严格一点可以少一类「看起来解析成功、其实是 0」的坑。 */
+bool SVC_Param_TextToU32(char const *text, uint32_t *out);
+
+/** @brief 设备标识的**判据结果**（`SVC_Param_CheckDeviceId()` 的返回值）。
+ *
+ * NOTE (为什么要分这么多档，2026-09-28 当天订正)：判据上线当天就踩到了——
+ *   `AT+SN="…"` 被拒后日志只说 `value rejected`，**看不出到底哪里不合法**
+ *   （空串？含非法字符？长度超了？还是没刷？），现场只能靠猜。
+ *   所以改成"返回原因 + 给出出错位置"，让拒绝本身可诊断。 */
+typedef enum {
+    SVC_DEVICE_ID_OK = 0,      /*!< 可用 */
+    SVC_DEVICE_ID_EMPTY,       /*!< 空串 */
+    SVC_DEVICE_ID_DEFAULT,     /*!< 仍是出厂默认值（= 产线还没刷） */
+    SVC_DEVICE_ID_TOO_LONG,    /*!< 长度 ≥ `SVC_PARAM_BLE_SN_CAP` */
+    SVC_DEVICE_ID_BAD_CHAR     /*!< 含非法字符（`*badIndex` 给出它在串里的下标） */
+} SvcDeviceIdStatus;
+
+/** @brief 该值能否当**设备标识**用（MQTT `clientId` 与全部主题里的 `deviceId`）。
+ *
+ * @param value    候选值（通常是参数 `sn` 的影子内容）
+ * @param badIndex 出参，可为 `NULL`：不合法时写入出错下标（仅 `SVC_DEVICE_ID_BAD_CHAR` 有效）
+ * @return `SVC_DEVICE_ID_OK` 才能拿去拼主题；其余是各自的拒绝原因
+ *
+ * 规则（2026-09-28 起 `sn` 就是设备标识）：
+ *   ① 非空；
+ *   ② 字符集只允许 `A-Z a-z 0-9` 与 `-` `_` `.`；
+ *   ③ 长度 < `SVC_PARAM_BLE_SN_CAP`；
+ *   ④ **不等于出厂默认值** `APP_CFG_BLE_SN` —— 那表示「产线还没刷」。
+ *
+ * NOTE (为什么必须校验，而不是“先让它能跑”)：这个值要嵌进 MQTT 主题。
+ *   `/` 是层级分隔符、`+` `#` 是通配符、空格与非 ASCII 各平台支持不一；
+ *   而**非法值造成的失败是静默的**——`sensor-product//command` 在 MQTT 里是合法主题，
+ *   模组订阅还会回 `+MQTTSUBACK`，只是永远收不到平台的消息（与 `08-改动日志` 里
+ *   `#51` 那次踩的是同一类坑）。所以宁可在产线当场拒写、在启动时拒绝上网。
+ * NOTE (为什么放在 Service 层)：与 `SVC_Param_TextToU32()` 同理——**同一个判据要被
+ *   两处使用**（命令层写入校验、`modem.c` 启动校验），各写一份必然出现
+ *   「一边收紧、一边放宽」的偏差。
+ * NOTE (要改规则只改这里)：放宽/收紧字符集、换出厂哨兵值，都只动本函数。 */
+SvcDeviceIdStatus SVC_Param_CheckDeviceId(char const *value, uint8_t *badIndex);
 
 #endif /* SVC_PARAM_H */

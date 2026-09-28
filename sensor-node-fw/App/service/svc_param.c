@@ -26,7 +26,10 @@ static ParamDesc const l_desc[SVC_PARAM_COUNT] = {
     { "uuid",    SVC_PARAM_BLE_UUID_CAP,    APP_CFG_BLE_SERVICE_UUID },
     { "devname", SVC_PARAM_BLE_DEVNAME_CAP, APP_CFG_BLE_DEVICE_NAME  },
     { "model",   SVC_PARAM_BLE_MODEL_CAP,   APP_CFG_BLE_MODEL_CODE   },
-    { "batch",   SVC_PARAM_BLE_BATCH_CAP,   APP_CFG_BLE_BATCH_CODE   }
+    { "batch",   SVC_PARAM_BLE_BATCH_CAP,   APP_CFG_BLE_BATCH_CODE   },
+    /* 业务参数：周期上报间隔（分钟）。AT 形态是 `AT+TRANSINTVL?` / `AT+TRANSINTVL=<1..20>`，
+     * 由命令层按 app_config.h 的 APP_CFG_MODEM_TRANS_INTERVAL_MIN/MAX 做范围校验。 */
+    { "transintvl", SVC_PARAM_TRANSINTVL_CAP, APP_CFG_MODEM_TRANS_INTERVAL_DEFAULT_TEXT }
 };
 
 /* 编译期自检（负数组长度 = 编译报错）：
@@ -309,4 +312,66 @@ bool SVC_Param_SeqNewer(uint8_t a, uint8_t b) {
     /* 槽序号是 8 位自然回绕的计数器：用有符号差值比较，跨 255→0 时仍然正确
     * （例如 a=1、b=254 判定 a 更新）。 */
     return ((int8_t)(a - b) > 0);
+}
+
+/*..........................................................................*/
+bool SVC_Param_TextToU32(char const *text, uint32_t *out) {
+    uint32_t value = 0U;
+    uint8_t digits = 0U;
+
+    if ((text == (char const *)0) || (out == (uint32_t *)0) || (text[0] == '\0')) {
+        return false;
+    }
+
+    while (*text != '\0') {
+        /* 只收 0~9：前导空白、正负号、0x 前缀、小数点一律判非法（参数值不该长这样） */
+        if ((*text < '0') || (*text > '9') || (digits >= 9U)) {
+            return false;
+        }
+        value = (value * 10U) + (uint32_t)(*text - '0');
+        ++digits;
+        ++text;
+    }
+
+    *out = value;
+    return true;
+}
+
+/*..........................................................................*/
+SvcDeviceIdStatus SVC_Param_CheckDeviceId(char const *value, uint8_t *badIndex) {
+    uint8_t index = 0U;
+
+    if (badIndex != (uint8_t *)0) {
+        *badIndex = 0U;
+    }
+    if ((value == (char const *)0) || (value[0] == '\0')) {
+        return SVC_DEVICE_ID_EMPTY;   /* 拼出来是 `sensor-product//command` 这种没人发的主题 */
+    }
+    /* 出厂默认值 = 产线还没刷。NOTE：换哨兵值时改这一行（或改 app_config.h 的默认值）。
+     * NOTE (为什么只在有存储时判，2026-09-28)：`APP_CFG_STORE_ENABLE = 0` 时影子永远只有
+     *   编译期默认值，而**没有任何途径把它改成别的**（写只改 RAM、掉电即丢）。
+     *   若照样拒绝，那个构建的 4G 会永远起不来——所以这种构建下不把默认值当"未配置"。 */
+#if (APP_CFG_STORE_ENABLE != 0)
+    if (strcmp(value, APP_CFG_BLE_SN) == 0) {
+        return SVC_DEVICE_ID_DEFAULT;
+    }
+#endif
+    if (strlen(value) >= (size_t)SVC_PARAM_BLE_SN_CAP) {
+        return SVC_DEVICE_ID_TOO_LONG;   /* SetValue 本已按容量拒，这里是兜底 */
+    }
+    while (*value != '\0') {
+        char const c = *value;
+        bool const ok = ((c >= 'A') && (c <= 'Z')) || ((c >= 'a') && (c <= 'z')) ||
+                        ((c >= '0') && (c <= '9')) ||
+                        (c == '-') || (c == '_') || (c == '.');
+        if (!ok) {
+            if (badIndex != (uint8_t *)0) {
+                *badIndex = index;
+            }
+            return SVC_DEVICE_ID_BAD_CHAR;
+        }
+        ++value;
+        ++index;
+    }
+    return SVC_DEVICE_ID_OK;
 }

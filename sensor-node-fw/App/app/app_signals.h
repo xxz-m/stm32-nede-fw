@@ -14,6 +14,7 @@
 *   Ble 段 128..159
 *   Modem 段 160..191
 *   Store 段 192..223 AO_Store 自用（掉电参数存储）
+*   System 段 224..255 AO_System 自用（系统级动作：延迟复位）
 *
 * 规则（见 docs_sensor/07-接口约定.md#信号与事件）：
 *   - 段内信号只允许本 AO 自己使用；跨 AO 投递必须用全局段
@@ -32,6 +33,9 @@ enum AppSignals {
     SYS_SENSOR_STOP_SIG,                    /* Node -> Sensor：停止采样     */
     SYS_SENSOR_REPORT_SIG,                  /* Node -> Sensor：立即上报一次 */
     SYS_SENSOR_PERIOD_SIG,                  /* 通信 AO -> Sensor：修改采样周期 */
+    SYS_REBOOT_REQUEST_SIG,                 /* 任意命令来源 -> AO_System：请求系统复位
+                                             * （串口/4G 都经 App_System_RequestReboot()
+                                             *   投递；**只置请求，复位由 AO_System 延时执行**） */
     GLOBAL_SIG_END = GLOBAL_SIG_BASE + 32,
 
     /* ---------- AO_Node 段 32..63 ---------- */
@@ -68,7 +72,12 @@ enum AppSignals {
     STORE_TICK_SIG = STORE_SIG_BASE,   /* 10 ms 周期：推进写周期等待与扫描 */
     STORE_BUS_SIG,                     /* I2C 中断：一次总线传输结束        */
     STORE_CMD_SIG,                     /* 有新请求：参数被改 / 请求扫描     */
-    STORE_SIG_END = STORE_SIG_BASE + 32
+    STORE_SIG_END = STORE_SIG_BASE + 32,
+
+    /* ---------- AO_System 段 224..255 ---------- */
+    SYSTEM_SIG_BASE = STORE_SIG_END,
+    SYSTEM_TICK_SIG = SYSTEM_SIG_BASE, /* 100 ms 周期：推进重启倒计时       */
+    SYSTEM_SIG_END = SYSTEM_SIG_BASE + 32
 };
 
 #endif /* APP_SIGNALS_H */

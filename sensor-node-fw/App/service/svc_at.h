@@ -1,4 +1,4 @@
-/*============================================================================
+﻿/*============================================================================
 * svc_at.h —— 服务层：AT 指令解析（调试串口）
 *
 * 层次定位：App → **Service(服务层)** → BSP → HAL/CMSIS
@@ -13,11 +13,19 @@
 *   AT&F                   恢复编译期默认值并落盘   -> OK
 *   AT+CFG?                查参数存储运行状态       -> +CFG:<8 个逗号分隔字段>
 *   AT+I2C?                扫描 I2C 总线            -> OK（结果以 +I2C:<地址> 上报）
-*   AT+<参数名>?           读参数                   -> +<参数名>:"<值>"
+*   AT+VER?                查固件版本与编译时间     -> +VER:"<版本>","<日期>"
+*   AT+CMD?                查本设备支持的 AT 命令集  -> +CAD:…
+*   AT+REBOOT / AT+RST     重启设备（先回 OK，延时后复位）-> OK
+*   AT+BLESVCUUID?         查 BLE 服务 UUID（= 参数 `uuid`）-> +BLESVCUUID:"<值>"，随后 OK
+*   AT+<参数名>?           读参数                   -> +<参数名>:"<值>"（数值型不带引号）
 *   AT+<参数名>="<值>"     写参数                   -> OK
-*   AT+<参数名>=?          测试形式：报告最大长度   -> +<参数名>:(<最大长度>)
+*   AT+<参数名>=?          测试形式                 -> +<参数名>:(<最大长度>)
 *
-* 参数名（7 个）：SN NAME PIN UUID DEVNAME MODEL BATCH（大小写不敏感）。
+* 参数名（8 个）：SN NAME PIN UUID DEVNAME MODEL BATCH TRANSINTVL（大小写不敏感）。
+*   - 前 7 个是**字符串型**：读回带引号、测试形式报可写字符数；
+*   - `TRANSINTVL` 是**数值型**（周期上报间隔，分钟，1~20）：读回不带引号
+*     （`+TRANSINTVL:20`）、测试形式报范围（`+TRANSINTVL:(1,20)`）、写越界回
+*     `+CME ERROR:2`。形态差异的实现在 `command_dispatch.c`（本层只解析，不判范围）。
 *
 * NOTE (2026-09-27 接口改写)：本模块原先支持 `sn?` / `sn=值` / `cfg?` / `cfg!` / `i2c?`
 *   这套**自定义语法**——借用了 AT 的 `?` `=` `ok` `ERROR` 外壳，但不是 AT 语法：
@@ -55,7 +63,7 @@
 
 /*! 调用方为一条响应准备的缓冲大小。
 * 最长的响应是 `+CFG:` 那行（8 个十进制字段）与 `+DEVNAME:"…"`，约 50 字节，留足余量。 */
-#define SVC_AT_RESP_MAX  (SVC_AT_LINE_MAX + 48U)
+#define SVC_AT_RESP_MAX  (SVC_AT_LINE_MAX + 128U)
 
 /*! 解析出的命令种类。 */
 typedef enum {
@@ -67,7 +75,11 @@ typedef enum {
     SVC_AT_KIND_INFO,       /*!< AT+CFG?                       */
     SVC_AT_KIND_DEFAULTS,   /*!< AT&F                          */
     SVC_AT_KIND_SCAN,        /*!< AT+I2C?                       */
-		SVC_AT_KIND_VERSION			 /*!< AT+VER?                       */
+		SVG_AT_KIND_CMD,				/*!< AT+VER?                       */
+		SVC_AT_KIND_VERSION,			 /*!< AT+VER?                       */
+		SVC_AT_KIND_REBOOT,			 /*!< AT+REBOOT（系统复位）          */
+		SVC_AT_KIND_BLE_UUID			 /*!< AT+BLESVCUUID?（查 BLE 服务 UUID）*/
+		
 } SvcAtKind;
 
 /*! 一条解析结果。 */

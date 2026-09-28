@@ -35,32 +35,94 @@
 *  本表里不写裸数字，调整节奏只改配置。 */
 static ModemStep const kMn316Plan[] = {
     /* op                     mode                  timeout                            retry                            budget                             attempts                          tolerate */
-    {MODEM_OP_PROBE,          MODEM_STEP_REPEAT,    MODEM_COMPONENT_PROBE_TIMEOUT_MS,   MODEM_COMPONENT_AT_RETRY_MS,     MODEM_COMPONENT_PROBE_BUDGET_MS,   MODEM_COMPONENT_PROBE_ATTEMPTS,   (char const *)0},
-    {MODEM_OP_ECHO_OFF,       MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_CMEE,           MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_RADIO,          MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_SIM,            MODEM_STEP_REPEAT,    MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_POLL_INTERVAL_MS, MODEM_COMPONENT_SIM_WAIT_MS,      1U,                               (char const *)0},
-    {MODEM_OP_IDENTITY,       MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_SIGNAL,         MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_SIGNAL_EXT,     MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_OPERATOR,       MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_REG_MODE,       MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_REGISTRATION,   MODEM_STEP_REPEAT,    MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_REG_POLL_MS,     MODEM_COMPONENT_REG_TIMEOUT_MS,    1U,                               (char const *)0},
-    {MODEM_OP_ATTACHED,       MODEM_STEP_REPEAT,    MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_POLL_INTERVAL_MS, MODEM_COMPONENT_ATTACH_TIMEOUT_MS, 1U,                               (char const *)0},
-    {MODEM_OP_IP_ADDRESS,     MODEM_STEP_ONCE,      MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
+    {MODEM_OP_PROBE,          MODEM_STEP_REPEAT,    MODEM_COMPONENT_PROBE_TIMEOUT_MS,   MODEM_COMPONENT_AT_RETRY_MS,     MODEM_COMPONENT_PROBE_BUDGET_MS,   MODEM_COMPONENT_PROBE_ATTEMPTS,   (char const *)0, 0U},
+    {MODEM_OP_ECHO_OFF,       MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_CMEE,           MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_RADIO,          MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_SIM,            MODEM_STEP_REPEAT,    MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_POLL_INTERVAL_MS, MODEM_COMPONENT_SIM_WAIT_MS,      1U,                               (char const *)0, 0U},
+    {MODEM_OP_IDENTITY,       MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_SIGNAL,         MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_SIGNAL_EXT,     MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_OPERATOR,       MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_REG_MODE,       MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_REGISTRATION,   MODEM_STEP_REPEAT,    MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_REG_POLL_MS,     MODEM_COMPONENT_REG_TIMEOUT_MS,    1U,                               (char const *)0, 0U},
+    {MODEM_OP_ATTACHED,       MODEM_STEP_REPEAT,    MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_POLL_INTERVAL_MS, MODEM_COMPONENT_ATTACH_TIMEOUT_MS, 1U,                               (char const *)0, 0U},
+    {MODEM_OP_IP_ADDRESS,     MODEM_STEP_ONCE,      MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
     /* NOTE (PDP/APN 诊断步，2026-09-27)：只读地把模组当前配置的 APN 打到 trace 里，
      *   用来判读第 18 步「连不上 MQTT 服务器」到底是网络侧哪种情况。动机见下方
      *   mn316Build 的 MODEM_OP_PDP 分支。
-     *   ⚠ **这一步是插在计划表中间的，它把后面所有步骤的编号 +1**：MN316 由 21 步变
-     *   **22 步**，`AT+MQTTCFG` 由第 17 步变第 18 步、`AT+MQTTOPEN` 由第 18 步变第 19 步。
+     *   ⚠ **这一步是插在计划表中间的，它把后面所有步骤的编号 +1**（当时 MN316 由
+     *   21 步变 22 步）。同类的一次插入是 2026-09-28 的 `MODEM_OP_MQTT_CFG_QUERY`
+     *   （`AT+MQTTCFG?`，插在 `MQTT_STATE` 之前），当前编号以本表实际为准：
+     *   共 **23 步**（关掉公网探测时），`AT+MQTTSTAT?` = 16、`AT+MQTTCFG` = 20、
+     *   `AT+MQTTOPEN` = 21。
      *   改动日志与 `App/component/README.md` 里引用的旧编号属历史记录，不回改；
      *   本文件里凡是按编号写的注释都已同步。 */
-    {MODEM_OP_PDP,            MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    {MODEM_OP_MQTT_DISC,      MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
-    /* NOTE (tolerate)：无客户端时本模组对 AT+MQTTDEL 必回 +CME ERROR:8002，
-     *   而「没有客户端」正是本步要的结果，故声明为可接受（见 modem_backend.h 的字段说明）。 */
-    {MODEM_OP_MQTT_DELETE,    MODEM_STEP_REPEAT,    MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_AT_RETRY_MS,     0U,                                2U,                               "+CME ERROR:8002"},
-    {MODEM_OP_MQTT_TIMEOUT,   MODEM_STEP_ONCE,      MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
+    {MODEM_OP_PDP,            MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+#if (MODEM_COMPONENT_NET_PROBE_ENABLE != 0U)
+    /* NOTE (公网可达性探测，2026-09-27)：四步裸 TCP，用来回答「这张卡到底能不能出
+     *   公网」。动机与判据见 modem_backend.h 的 MODEM_OP_NET_PROBE_* 注释块。
+     *   NOTE (为什么整块用 #if 包住，而不是只让 build() 返回 false)：
+     *   `plan_count` 是这张表**实际的行数**，日志的 `connecting, N steps` 与
+     *   `step k/N` 都直接取它。若把四行留在表里、只让 build() 返回 false，步骤会被
+     *   startPlanStep() 原地跳过（不发 AT、不占时间），但 N 会从 23 变成 27、
+     *   `AT+MQTTOPEN` 的编号也会 +4——**日志口径被永久改掉**，以后对着
+     *   历史日志排查会一直错位。用 #if 把四行真正去掉，关掉探测时 N 与编号
+     *   完全回到原来的 23 步，行为与加它之前一模一样。
+     *   NOTE (开启时的代价)：编号会整体 +4（`AT+MQTTOPEN` 由第 21 步变第 25 步），
+     *   成功路径约多 6~7 s。仅诊断期打开。 */
+    {MODEM_OP_NET_PROBE_OPEN,    MODEM_STEP_OPTIONAL,        MODEM_COMPONENT_NET_PROBE_TIMEOUT_MS, MODEM_COMPONENT_AT_RETRY_MS,            0U, 1U,                                                    (char const *)0, 0U},
+    /* NOTE (为什么 CONNECT 之后要等)：`AT+NSOCO` 回 OK 只表示「开始连接远程服务器」
+     *   （AT 命令手册 §5.5，第 83 页批注），不是连上了。必须留一段时间给模组建链，
+     *   否则紧随其后的 `AT+NSOSD` 发不出去（手册要求先保证连接成功）。 */
+    {MODEM_OP_NET_PROBE_CONNECT, MODEM_STEP_OPTIONAL,        MODEM_COMPONENT_NET_PROBE_TIMEOUT_MS, MODEM_COMPONENT_AT_RETRY_MS,            0U, 1U,                                                    (char const *)0, MODEM_COMPONENT_NET_PROBE_SETTLE_MS},
+    /* NOTE (成功标记为什么是 +NSOSD:)：手册 §5.6（第 84 页）把它列为「成功」响应，
+     *   即模组已把数据交给一条**已建立的 TCP 连接**；socket 还停在 connecting 时
+     *   会回 `+CME ERROR:8002`，到不了这里。NB-IoT 建链慢，给几次重发机会。 */
+    {MODEM_OP_NET_PROBE_SEND,    MODEM_STEP_OPTIONAL_REPEAT, MODEM_COMPONENT_NET_PROBE_TIMEOUT_MS, MODEM_COMPONENT_NET_PROBE_SEND_RETRY_MS, 0U, MODEM_COMPONENT_NET_PROBE_SEND_ATTEMPTS,                  (char const *)0, 0U},
+    /* NOTE (必须关，而且要重试)：手册第 24 页写明模组同时最多 2 个 socket，且不宜
+     *   短时间反复创建/关闭。不关会把 MQTT 自己的 socket 名额占掉。实测（2026-09-27）
+     *   在「连不上目标」时 `AT+NSOCL` 也会回 `+CME ERROR:8002`（操作不允许，状态机
+     *   不符合）——socket 卡在 connecting 状态，关不掉。因此这里用 OPTIONAL_REPEAT
+     *   多试几次，给模组内部的连接超时留出释放时间。 */
+    {MODEM_OP_NET_PROBE_CLOSE,   MODEM_STEP_OPTIONAL_REPEAT, MODEM_COMPONENT_NET_PROBE_TIMEOUT_MS, MODEM_COMPONENT_NET_PROBE_CLOSE_RETRY_MS, 0U, MODEM_COMPONENT_NET_PROBE_CLOSE_ATTEMPTS,            (char const *)0, 0U},
+#endif /* MODEM_COMPONENT_NET_PROBE_ENABLE */
+    /* 先查现有会话：MCU 重启不等于 MN316 断电，状态 5 时保留云连接。
+     *
+     * NOTE (为什么是 OPTIONAL_REPEAT，2026-09-27)：手册（MQTT 用户手册 §2.3，第 12 页）
+     *   里 3/4/6/7 四个状态分别是「发送 Connect 包等 ack」「正在重连服务器」
+     *   「建立 TCP 连接中」「TCP 连接已建立」——**连接正在路上，不是失败**。
+     *   原先本步是 OPTIONAL：只要不是 5 就当场判「跳过」，紧接着发 `AT+MQTTDISC`，
+     *   把模组正在建立的连接连同它自己的重连机制一起拆掉（手册第 23 页：主动
+     *   MQTTDISC 之后不会再触发重连）。改成 OPTIONAL_REPEAT 后，这几档状态会先被
+     *   等待 + 重问，等满 MODEM_COMPONENT_MQTT_STATE_TIMEOUT_MS 仍未到 5，
+     *   才按「未连接」继续走重建流程。0/1/2 是明确未连接，后端直接返回成功。 */
+    /* 复用会话之前先**读回模组里的客户端参数**做比对（2026-09-28 补，关闭 `#40` 的遗留）。
+     *
+     * NOTE (为什么必须有这一步)：MCU 重启**不会**断掉模组自己的 MQTT 会话，所以下一条
+     *   `AT+MQTTSTAT?` 常会回 5。但"状态 5"只说明会话还活着，**不代表这个会话是用我们
+     *   当前的身份建的**：`clientId` 是连接时下发的参数，一旦设备身份（参数 `SN`，见
+     *   `ModemConfig.device_id`）改过，直接复用就会让 broker 侧的 `clientId` **停留在旧值**。
+     *   实测就是这么暴露的（改了 SN、`AT+MQTTSUBACK` 的新主题也订上了，但 clientId 没变）。
+     *   `#40` 的遗留里本来就写着「手册第 9 页的 `AT+MQTTCFG?` 可以读回 host/port/clientid…
+     *   用于复用会话前比对」，本轮把它落地。
+     *
+     * NOTE (为什么是 OPTIONAL)：没配过的模组回 `+CME ERROR`。这一步失败时
+     *   `remote_cfg_matches` 保持 false（不匹配）→ 不复用、走完整重建，**失败方向是安全的**。
+     * NOTE (读不到就一定重建的代价)：多花一次 DISC/DEL/CFG/OPEN 的时间，换来"身份一定正确"。
+     *   只在模组里已有会话时才可能发生，正常上电（模组里没有会话）本来就走重建。 */
+    {MODEM_OP_MQTT_CFG_QUERY, MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    {MODEM_OP_MQTT_STATE,     MODEM_STEP_OPTIONAL_REPEAT, MODEM_COMPONENT_MQTT_STATE_TIMEOUT_MS, MODEM_COMPONENT_MQTT_STATE_POLL_MS, MODEM_COMPONENT_MQTT_STATE_TIMEOUT_MS, 1U,                     (char const *)0, 0U},
+    {MODEM_OP_MQTT_DISC,      MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
+    /* NOTE (8002 改判，2026-09-27)：手册（AT 命令用户手册 §11.1，第 132 页）把
+     *   `+CME ERROR:8002` 定义为「操作不允许，通常为状态机不符合」——这是**可等待的
+     *   瞬时状态**，不是终态；原先把它写成 tolerate 会一步放行、跳过全部重试，等于在
+     *   模组还没释放完资源时就直接进入 `AT+MQTTCFG`。
+     *   现在按「重试→仍不行就继续」处理：等 MODEM_COMPONENT_MQTT_TEARDOWN_RETRY_MS
+     *   再发，最多 3 次；用尽后由 OPTIONAL_REPEAT 的语义继续走，不把整条连接判死。
+     *   这正是手册 §3.3「释放资源，之后可以再次使用 +MQTTCFG 进行配置」的节奏。 */
+    {MODEM_OP_MQTT_DELETE,    MODEM_STEP_OPTIONAL_REPEAT, MODEM_COMPONENT_CONFIG_TIMEOUT_MS, MODEM_COMPONENT_MQTT_TEARDOWN_RETRY_MS, 0U,                      3U,                               (char const *)0, 0U},
+    {MODEM_OP_MQTT_TIMEOUT,   MODEM_STEP_ONCE,      MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
     /* NOTE (800x 重试预算，2026-09-27)：上板实测第 17 步 `AT+MQTTCFG=` 会回
      *   `+CME ERROR:800x`。手册（MN316 MQTT 用户手册 V1.0.0 §2.1，第 8~9 页）确认
      *   **命令形态本身没错**：8 个参数 host/port/id/keepAlive/user/passwd/clean/encrypt，
@@ -75,18 +137,17 @@ static ModemStep const kMn316Plan[] = {
      *   故次数 2 → 6、重发间隔由 500 ms（AT_RETRY）改为 1 s（POLL_INTERVAL），
      *   合计约 6 秒的重试窗口。
      *
-     *   NOTE (为什么不是 tolerate)：把 800x 当成功会让紧随其后的 `AT+MQTTOPEN` 在
-     *   「没有配置好的客户端」的情况下失败，只是把故障点往后推、更难定位。要**重试**，
-     *   不要容忍——这与 `MODEM_OP_MQTT_DELETE` 那条的语义正好相反。 */
-    {MODEM_OP_MQTT_CONFIG,    MODEM_STEP_REPEAT,    MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_POLL_INTERVAL_MS, 0U,                              6U,                               (char const *)0},
-    {MODEM_OP_MQTT_OPEN,      MODEM_STEP_REPEAT,    MODEM_COMPONENT_MQTT_OPEN_TIMEOUT_MS, MODEM_COMPONENT_POLL_INTERVAL_MS, 0U,                              1U,                               (char const *)0},
-    {MODEM_OP_MQTT_STATE,     MODEM_STEP_REPEAT,    MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_POLL_INTERVAL_MS, MODEM_COMPONENT_MQTT_STATE_TIMEOUT_MS, 1U,                          (char const *)0},
-    {MODEM_OP_TOPIC_SUB,      MODEM_STEP_TOPIC,     MODEM_COMPONENT_TOPIC_TIMEOUT_MS,   MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0},
+     *   NOTE (为什么不是 tolerate，2026-09-27 修订)：把 800x 当成功只是把故障点往后推。
+     *   要**重试**，不要容忍。`AT+MQTTDEL` 那条原先也用了 tolerate，现同样改成
+     *   `OPTIONAL_REPEAT`（等 1 秒重试 3 次，用尽后继续而不判死），理由见计划表里那一行。 */
+    {MODEM_OP_MQTT_CONFIG,    MODEM_STEP_REPEAT,    MODEM_COMPONENT_CONFIG_TIMEOUT_MS,  MODEM_COMPONENT_POLL_INTERVAL_MS, 0U,                              6U,                               (char const *)0,                  MODEM_COMPONENT_MQTT_OPEN_SETTLE_MS},
+    {MODEM_OP_MQTT_OPEN,      MODEM_STEP_REPEAT,    MODEM_COMPONENT_MQTT_OPEN_TIMEOUT_MS, MODEM_COMPONENT_MQTT_OPEN_RETRY_MS, 0U,                              MODEM_COMPONENT_MQTT_OPEN_ATTEMPTS, (char const *)0, 0U},
+    {MODEM_OP_TOPIC_SUB,      MODEM_STEP_TOPIC,     MODEM_COMPONENT_TOPIC_TIMEOUT_MS,   MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0, 0U},
     /* NOTE (补查信号，2026-09-20)：第 7 步的 AT+CSQ 跑在注册之前，模组必然回 99（未知），
      *   于是上报里的 signal_quality 永远是 99。这里在 MQTT 上线后再查一次，让它有真值。
      *   NOTE (为什么追加在末尾)：计划表按下标取值、后端按 op 分派，追加一行只多一步，
      *   不会改变已有步骤的编号（避免与日志/文档里的 step k/N 对不上）。 */
-    {MODEM_OP_SIGNAL,         MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0}
+    {MODEM_OP_SIGNAL,         MODEM_STEP_OPTIONAL,  MODEM_COMPONENT_TIMEOUT_MS,         MODEM_COMPONENT_AT_RETRY_MS,     0U,                                1U,                               (char const *)0,                 0U}
 };
 
 /*--------------------------------------------------------------- 小工具 */
@@ -311,11 +372,11 @@ static bool mn316Build(ModemComponent *me, uint8_t step, char *expected,
             produced = snprintf(me->command, sizeof(me->command), "AT+MQTTDISC");
             break;
         case MODEM_OP_MQTT_DELETE:
-            /* NOTE (2026-09-20 修正判据)：本模组在**没有 MQTT 客户端**时对 AT+MQTTDEL
-             *   一律回 `+CME ERROR:8002`（#13 的 PC 实测结论），这是稳定状态而不是
-             *   瞬时状态——原注释以为「断开还没完成」、靠重试等它消失，实测等不到。
-             *   而「没有客户端」正是一开始想要的状态，所以由计划表的 tolerate 声明
-             *   8002 为可接受结果（见下面 kMn316Plan 的本行）。 */
+            /* NOTE (2026-09-27 改判)：本模组在没有 MQTT 客户端、或资源还没释放完时，
+             *   对 `AT+MQTTDEL` 会回 `+CME ERROR:8002`。手册（AT 命令用户手册 §11.1，
+             *   第 132 页）的定义是「操作不允许，通常为状态机不符合」——**等一会儿再发
+             *   就好**的瞬时状态。因此不再用 tolerate 一步放行，而是在计划表里把它声明成
+             *   `OPTIONAL_REPEAT`：按 MQTT_TEARDOWN_RETRY_MS 重试，用尽后继续下一步。 */
             produced = snprintf(me->command, sizeof(me->command), "AT+MQTTDEL");
             break;
         case MODEM_OP_MQTT_TIMEOUT:
@@ -345,6 +406,15 @@ static bool mn316Build(ModemComponent *me, uint8_t step, char *expected,
                 return false;
             }
             return setExpected(expected, expectedSize, "+MQTTOPEN:OK");
+        case MODEM_OP_MQTT_CFG_QUERY:
+            /* 手册 §2.1（第 9 页）示例：`AT+MQTTCFG?` →
+             * `+MQTTCFG:183.230.40.39,6002,4069959,60,75829,***,*,1,0`
+             * （host, port, clientId, keepalive, user, 掩码后的密码 …；密码由模组自己打星号）。 */
+            produced = snprintf(me->command, sizeof(me->command), "AT+MQTTCFG?");
+            if (!commandReady(me, produced)) {
+                return false;
+            }
+            return setExpected(expected, expectedSize, "+MQTTCFG:");
         case MODEM_OP_MQTT_STATE:
             produced = snprintf(me->command, sizeof(me->command), "AT+MQTTSTAT?");
             break;
@@ -367,6 +437,65 @@ static bool mn316Build(ModemComponent *me, uint8_t step, char *expected,
                 return false;
             }
             return setExpected(expected, expectedSize, "+MQTTSUBACK");
+        case MODEM_OP_NET_PROBE_OPEN:
+            if (MODEM_COMPONENT_NET_PROBE_ENABLE == 0U) {
+                return false;   /* 关掉时整组跳过：build 返回 false，核心原地推进 */
+            }
+            produced = snprintf(me->command, sizeof(me->command),
+                                "AT+NSOCR=\"STREAM\",6,%u,1",
+                                (unsigned)MODEM_COMPONENT_NET_PROBE_LOCAL_PORT);
+            break;
+        case MODEM_OP_NET_PROBE_CONNECT:
+            if (MODEM_COMPONENT_NET_PROBE_ENABLE == 0U) {
+                return false;
+            }
+            produced = snprintf(me->command, sizeof(me->command),
+                                "AT+NSOCO=%u,%s,%u",
+                                (unsigned)me->probe_socket,
+                                MODEM_COMPONENT_NET_PROBE_HOST,
+                                (unsigned)MODEM_COMPONENT_NET_PROBE_PORT);
+            break;
+        case MODEM_OP_NET_PROBE_SEND:
+            if (MODEM_COMPONENT_NET_PROBE_ENABLE == 0U) {
+                return false;
+            }
+            /* NOTE (命令名易错，2026-09-27 上板踩过)：这里必须用 **AT+NSOSD**。
+             *   `AT+NSOD` 是《MN316_通信流程示例》第 22 页示例里的**笔误**——模组没有
+             *   这条命令，AT 命令手册第 5 章的命令表里只有
+             *   `5.2 AT+NSOST`（发送 UDP 数据）与 `5.6 AT+NSOSD`（发送 TCP 数据）。
+             *   发错名字的后果是 `+CME ERROR:4`（不支持的操作）而且**立刻**返回，
+             *   看起来像“连不上”，实际是命令名不认。
+             *   格式照抄 AT 命令手册第 84 页的示例
+             *   `AT+NSOSD=<socket>,<length>,<data>[,<flag>[,<sequence>]]`，其中 <data>
+             *   是**十六进制文本**——这一点由 `AT+NSOCFG` 的 `<input_mode>` 参数确认：
+             *   手册第 86 页写明「发送数据时使用的数据格式，**默认为十六进制**」。
+             *   NOTE (为什么**不带** <flag>/<sequence>，2026-09-27 上板踩过第二次)：
+             *   起初按示例写成 `AT+NSOSD=0,10,<data>,4`，想用 <sequence> 换回 `+NSOSTR`
+             *   这个 ACK 证据。移动卡上实测回 **`+CME ERROR:8001`（输入的 AT 命令参数不
+             *   合法）**——手册的语法里第 4 个位置是 `<flag>`，而 `<flag>` 只有
+             *   0x100/0x200/0x400 三个合法值，`4` 不在其中。（第 84 页那个
+             *   `AT+NSOSD=0,5,ABCDEF1234,1` 的示例与语法自相矛盾，是手册自身的问题。）
+             *   改成只用三个参数后，成功响应是手册明写的 `+NSOSD:<socket>,<length>`，
+             *   用它当成功标记即可——**没必要为了 `+NSOSTR` 去填一个非法 flag**。
+             *   NOTE (为什么负载只有 4 字节)：`MODEM_DIAG_FIELD_MAX` 是 36——它是**故意
+             *   卡在 `AT+MQTTCFG=` 的 host 之后、用来挡住用户名与密码的凭据护栏**
+             *   （见 modem_component.c 的 NOTE），**不能为了看全命令而调大**。
+             *   负载 4 字节时整条命令只有 21 字符，完整可见且不碰护栏。 */
+            produced = snprintf(me->command, sizeof(me->command),
+                                "AT+NSOSD=%u,4,41424344",
+                                (unsigned)me->probe_socket);
+            if (!commandReady(me, produced)) {
+                return false;
+            }
+            /* 手册第 84 页的「成功」响应：`+NSOSD:<socket>,<length>` 后跟 `OK`。 */
+            return setExpected(expected, expectedSize, "+NSOSD:");
+        case MODEM_OP_NET_PROBE_CLOSE:
+            if (MODEM_COMPONENT_NET_PROBE_ENABLE == 0U) {
+                return false;
+            }
+            produced = snprintf(me->command, sizeof(me->command),
+                                "AT+NSOCL=%u", (unsigned)me->probe_socket);
+            break;
         default:
             return false;
     }
@@ -381,6 +510,7 @@ static bool mn316Build(ModemComponent *me, uint8_t step, char *expected,
 static bool mn316Apply(ModemComponent *me, uint8_t step) {
     char const *cursor;
     char ipAddress[40];
+    char line[80];
     int32_t value = 0;
 
     switch (kMn316Plan[step].op) {
@@ -454,12 +584,117 @@ static bool mn316Apply(ModemComponent *me, uint8_t step) {
                 }
             }
             return true;
+        case MODEM_OP_MQTT_CFG_QUERY: {
+            /* 读回模组里存的 host / port / clientId，与**我们当前的身份**比对，
+             * 结果存进 `remote_cfg_matches`，供下一步 `MQTT_STATE` 决定"能不能复用会话"。
+             * NOTE (为什么只比这三项)：clientId 是平台认设备的关键（也是本步存在的直接原因）；
+             *   host/port 同类——换过服务器但复用旧会话，就连到旧平台去了。keepalive /
+             *   clean / encrypt 的差异不致命，且有干净的重建路径兜底，暂不解析（省代码）。 */
+            char host[48];
+            char clientId[MODEM_COMPONENT_TOKEN_MAX];
+            int32_t port = 0;
+
+            host[0] = '\0';
+            clientId[0] = '\0';
+            me->remote_cfg_matches = false;
+            cursor = afterMarker(me->response, "+MQTTCFG:");
+            if ((cursor == (char const *)0) ||
+                (!ModemAt_NextField(&cursor, host, sizeof(host))) ||
+                (!ModemAt_NextInt(&cursor, &port)) ||
+                (!ModemAt_NextField(&cursor, clientId, sizeof(clientId)))) {
+                MODEM_TRACE(me, "mqttcfg unparsed -> session will be rebuilt");
+                return true;   /* 本步"成功"（不拖垮计划），但不匹配 → 下一步不复用 */
+            }
+            me->remote_cfg_matches =
+                (strcmp(host, me->config->host) == 0) &&
+                (port == (int32_t)me->config->port) &&
+                (strcmp(clientId, me->config->device_id) == 0);
+            if (!me->remote_cfg_matches) {
+                /* NOTE (可以打 clientId)：它已经出现在订阅/发布主题里，不是凭据；
+                 *   密码字段由模组自己打星号，这里也从不解析它。
+                 * NOTE (精度限定)：`line` 只有 80 B，而 host/clientId 的解析缓冲分别是
+                 *   48/24 B——不限定宽度会让 snprintf 可能截断（GCC 会给出
+                 *   `'%s' directive output may be truncated` 警告，本工程要求 0 warning）。
+                 *   打诊断用的名字，20/24 字符足够辨认。 */
+                (void)snprintf(line, sizeof(line), "mqttcfg differs: id=\"%.24s\" host=%.20s",
+                               clientId, host);
+                MODEM_TRACE(me, line);
+                MODEM_TRACE(me, "session will be rebuilt (identity changed)");
+            }
+            return true;
+        }
         case MODEM_OP_MQTT_STATE:
+            /* NOTE (三态判定，2026-09-27)：本步的语义是「查清楚现在能不能用」，
+             *   而不是「必须已经连上」。手册（MQTT 用户手册 §2.3，第 12 页）取值：
+             *     0 参数未初始化 / 1 参数已初始化 / 2 已断开 → **明确没连上**，
+             *       返回成功让核心继续走重建流程（不必白等预算）；
+             *     3 发 Connect 等 ack / 4 正在重连 / 6 建 TCP 中 / 7 TCP 已建立
+             *       → **连接正在路上**，返回失败让核心按 wait 重问，不要拆它；
+             *     5 已连接 → 复用会话，核心随后跳过 DISC/DEL/CFG/OPEN 四步。
+             *   其余值保守当作「未就绪」，同样按等待处理。 */
             cursor = afterMarker(me->response, "+MQTTSTAT:");
             if ((cursor == (char const *)0) || (!ModemAt_NextInt(&cursor, &value))) {
                 return false;
             }
-            return value == 5;   /* 5 = 已连接 */
+            /* NOTE (为什么把状态值打出来，2026-09-27)：本步成功时核心只打
+             *   `step k/N ok`，不带 rx，于是「状态是 1 还是 5」在日志上完全看不出来——
+             *   而这两者的后续路径截然不同（5 = 复用会话、1 = 重建）。实测排查时正是
+             *   卡在这里：知道「查了」，不知道「查到了什么」。 */
+            (void)snprintf(line, sizeof(line), "mqttstat %ld", (long)value);
+            MODEM_TRACE(me, line);
+            if (value == 5) {
+                /* NOTE (复用的**前提**，2026-09-28 补)：状态 5 只说明"会话还活着"，
+                 *   不代表"这个会话是用我们当前的身份建的"。`clientId` 是连接时下发的
+                 *   参数，而 MCU 重启不断模组的会话——若期间设备身份（`SN`）改过，
+                 *   直接复用会让 broker 侧的 clientId 停留在旧值（实测就是这么发现的：
+                 *   新主题订上了、clientId 没变）。所以复用前必须用上一步读回的模组配置
+                 *   做比对；不一致就走完整重建（DISC/DEL/CFG/OPEN），把新身份下发下去。
+                 *   `#40` 的遗留（"复用会话前比对 MQTTCFG?"）由此关闭。 */
+                if (!me->remote_cfg_matches) {
+                    MODEM_TRACE(me, "mqttstat 5 but cfg differs -> rebuild session");
+                    return true;   /* 成功但**不复用**：核心会继续走 DISC/DEL/CFG/OPEN */
+                }
+                me->session_reused = true;
+                return true;
+            }
+            if ((value == 0) || (value == 1) || (value == 2)) {
+                return true;
+            }
+            return false;
+        case MODEM_OP_NET_PROBE_OPEN:
+            /* 取 socket 编号供后面三步使用。响应形如 `+NSOCR:1` 后跟 `OK`
+             * （期望标记是 OK，所以走到这里时缓冲里两行都在）。 */
+            cursor = afterMarker(me->response, "+NSOCR:");
+            if ((cursor == (char const *)0) || (!ModemAt_NextInt(&cursor, &value))) {
+                return false;
+            }
+            me->probe_socket = (uint8_t)value;
+            (void)snprintf(line, sizeof(line), "netprobe socket %u created",
+                           (unsigned)me->probe_socket);
+            MODEM_TRACE(me, line);
+            return true;
+        case MODEM_OP_NET_PROBE_CONNECT:
+            (void)snprintf(line, sizeof(line), "netprobe connecting %s:%u (start)",
+                           MODEM_COMPONENT_NET_PROBE_HOST,
+                           (unsigned)MODEM_COMPONENT_NET_PROBE_PORT);
+            MODEM_TRACE(me, line);
+            return true;
+        case MODEM_OP_NET_PROBE_SEND:
+            /* 能走到这里就说明期望标记 `+NSOSD:` 命中了——手册第 84 页把它列为
+             * 「成功」响应，即模组已把数据交给一条**已建立的 TCP 连接**。
+             * 若 socket 还停在 connecting，模组会像 `AT+NSOSD` 那样回
+             * `+CME ERROR:8002`（操作不允许，状态机不符合），根本到不了这里。 */
+            (void)snprintf(line, sizeof(line),
+                           "netprobe %s:%u TCP send accepted (socket connected)",
+                           MODEM_COMPONENT_NET_PROBE_HOST,
+                           (unsigned)MODEM_COMPONENT_NET_PROBE_PORT);
+            MODEM_TRACE(me, line);
+            return true;
+        case MODEM_OP_NET_PROBE_CLOSE:
+            (void)snprintf(line, sizeof(line), "netprobe socket %u closed",
+                           (unsigned)me->probe_socket);
+            MODEM_TRACE(me, line);
+            return true;
         default:
             return true;
     }
@@ -617,9 +852,25 @@ static bool mn316PublishBuild(ModemComponent *me, ModemTopic topic, char const *
     used += strlen(&me->command[used]);
     me->command[used] = '"';
     me->command[used + 1U] = '\0';
-    /* QoS 1 要等 PUBACK；成功只代表模组收下了，不代表云端已处理。 */
-    return setExpected(expected, expectedSize,
-                       (slot->publish_qos == 0U) ? "OK" : "+MQTTPUBACK");
+    /* NOTE (期望标记恒为 "OK"，2026-09-28 修 `#59`)：原实现按 QoS 选标记，
+     *   给 QoS 1 等 **`+MQTTPUBACK`**——而 MN316 **根本没有这个 URC**。按手册
+     *   `MN316_MQTT用户手册_V1.0.0.pdf`：
+     *     - §2.5 `AT+MQTTPUB`（第 14 页）：成功响应就是 `OK`，该小节**没有「URC 信息」栏**；
+     *       QoS 2 的推进靠 `+MQTTPUBREC` / `+MQTTPUBREL` / `+MQTTPUBCOMP`（外加 `+MQTTPUBLISH`）。
+     *     - 对照 §2.4 `AT+MQTTSUB`（第 13 页）有 `+MQTTSUBACK`、§2.6 `AT+MQTTUNSUB`（第 15 页）
+     *       有 `+MQTTUNSUBACK`——唯独发布没有，说明是模组设计如此，不是手册漏写。
+     *   后果（上板实测）：`command/reply` 等 4 条 QoS 1 主题**每条都等满超时**，
+     *   日志打 `runtime fail … rx="OK" reason=2`，消息其实已经发出去了，却被判失败并重发最多 4 份。
+     *
+     * NOTE (为什么这里可以用 "OK" 而查询步不行)：`ModemAt_LineHasToken()` 是子串匹配，
+     *   模组重启后会主动上报 `+NET: "OK"`，所以**查询类步骤**必须用精确标记（见 README 的
+     *   「查询类步骤一律用精确期望标记」）。发布这里没有更精确的标记可用（模组不提供 ACK URC），
+     *   只能接受 `OK`；即使被 `+NET: "OK"` 抢答，后果也只是"提前认为成功"——命令本身已经发出，
+     *   与"永远等不到标记 → 误判链路失效"相比是明显更轻的失败模式。
+     *
+     * NOTE (语义边界)：`OK` 只表示**模组已受理并发出**，不代表云端已处理（QoS 1 的重传由模组内部负责）。
+     *   要判"平台确实收到了"，只能从平台侧看，设备侧无法进一步确认。 */
+    return setExpected(expected, expectedSize, "OK");
 }
 
 /** @brief 组装查小区信息的命令（复用 CEREG 的位置字段）。 */

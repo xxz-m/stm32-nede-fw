@@ -1,4 +1,4 @@
-/*============================================================================
+﻿/*============================================================================
 * svc_at.c —— 服务层：AT 指令解析实现
 *
 * 层次定位：Service 层。纯字符处理，无 I/O、无框架依赖、无存储访问。
@@ -7,7 +7,7 @@
 * 由 App 层决定——参数读写要经 AO_Store 异步落盘，不能在解析器里做。
 *
 * 命令形式见 svc_at.h 的文件头。新增命令：在下面的 parseLine() 里追加分支，
-* 并在 App 层的 atExecute() 里补执行。
+* 并在 App 层的 App_Command_Dispatch() 里补执行。
 *===========================================================================*/
 #include "svc_at.h"
 
@@ -147,7 +147,40 @@ static bool parseLine(char const *line, SvcAtCmd *out) {
 				out->kind =SVC_AT_KIND_VERSION;
 				return true;
 		}
-
+		if(eqIgnoreCase(line, "AT+CMD?")){
+				out->kind =SVG_AT_KIND_CMD;
+				return true;
+		}
+		/* `AT+REBOOT` / `AT+RST`：重启设备。
+		*  NOTE (为什么两个拼写都收)：平台规则文档给设备侧的重启命令名是 **`AT+RST`**
+		*    （见 docs_sensor/11-平台接口需求.md 1.4，此前列为"未实现"），而本工程自己的
+		*    叫法与 BLE 侧一致、用 `AT+REBOOT`。两者语义相同，合并到同一个 kind，
+		*    免得平台发 `AT+RST` 时被当成未知命令回 ERROR。
+		*  NOTE (为什么必须放在这里)：这两个拼写既不带 '=' 也不带 '?'，若落到下面的通用
+		*    分支之后，会被当成"参数名 rst/reboot"去查参数表而回 +CME ERROR:1。
+		*  NOTE (只认裸命令)：不接受 `AT+RST=1` / `AT+REBOOT?`——复位不可逆，形态越少越不
+		*    容易误触发（带参数会走 SET/TEST 分支，自然回错误码）。
+		*    （BLE 模组那条 `AT+RST=1` 走的是**另一路串口、另一套解析器**，与此无关。） */
+		if (eqIgnoreCase(line, "AT+REBOOT") || eqIgnoreCase(line, "AT+RST")) {
+				out->kind = SVC_AT_KIND_REBOOT;
+				return true;
+		}
+		/* `AT+BLESVCUUID?`：查 BLE 服务 UUID（= 参数 `uuid`）。
+		*  NOTE (为什么单列一条而不是靠通用 `AT+<参数名>?`)：**响应回显的名字不同**。
+		*    通用读法回 `+UUID:"…"`，而平台侧要的是 `+BLESVCUUID:"…"`——
+		*    它的匹配式是 `^\+BLESVCUUID:[^\r\n]*\r\nOK\r\n$`（2026-09-28 用户给出），
+		*    前缀不对就算不上。所以这里给一个专用 kind，由分发器用固定前缀格式化；
+		*    `param` 仍填 `"uuid"`，取值走参数表，**名字的唯一真相不搬家**。
+		*  NOTE (为什么必须放在通用分支之前)：它带 `?`，落下去会被当成"参数名
+		*    blesvcuuid"去查参数表而回 +CME ERROR:1。
+		*  NOTE (只认查询形式)：写入仍是 `AT+UUID="…"`（且现在**只允许串口写**）。 */
+		if (eqIgnoreCase(line, "AT+BLESVCUUID?")) {
+				if (!copyName(out->param, sizeof(out->param), "uuid", 4U)) {
+						return false;
+				}
+				out->kind = SVC_AT_KIND_BLE_UUID;
+				return true;
+		}
     /* 其余命令一律要求 `AT+` 前缀 */
     if (!startsWithAtPlus(line)) {
         return false;

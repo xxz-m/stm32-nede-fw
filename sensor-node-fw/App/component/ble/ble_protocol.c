@@ -262,6 +262,20 @@ static void handleJson(BleComponent *me, char *json) {
 void BLE_Protocol_Line(BleComponent *me, char const *line) {
     extern bool BLE_Backend_LineConnected(char const *);
     extern bool BLE_Backend_LineDisconnected(char const *);
+#if (BLE_COMPONENT_TRACE_RX_ENABLE != 0U)
+    /* NOTE (临时诊断，2026-09-28)：把模组发来的每一行原样打进日志——**排障完请把
+     *   `APP_CFG_BLE_TRACE_RX` 改回 0**。这是本函数唯一的"入口日志"：下面两条 if
+     *   只认连接/断开，其余通知此前是**静默丢弃**的，现场因此分不清
+     *   「手机没连上」与「连上了但通知不认识」。
+     * NOTE (凭据纪律)：含 `{` 的行是**小程序的 JSON 载荷**（auth 请求里带 PIN），
+     *   一律只打一个占位符，绝不原样输出。 */
+    if (strchr(line, '{') != (char const *)0) {
+        BLE_TRACE(me, "rx line (json payload suppressed)");
+    }
+    else {
+        BLE_TRACE(me, line);
+    }
+#endif
     if (BLE_Backend_LineConnected(line)) {
         me->connected = true;
         resetSession(me);

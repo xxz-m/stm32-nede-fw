@@ -639,6 +639,24 @@ bool App_Store_ConfigResolved(void) {
 }
 
 /*..........................................................................*/
+bool App_Store_IsIdle(void) {
+    Store const *me = &l_store;
+
+    /* 快路径：只要还有没落盘的改动，就一定不空闲（VERIFY 通过后才会清 dirty，
+     * 所以这一条已经蕴含"不在写"）。 */
+    if (me->param.dirty) {
+        return false;
+    }
+    /* 存储关闭：没有可丢的东西，永远空闲。 */
+    if (me->phase == ST_DISABLED) {
+        return true;
+    }
+    /* 其余相位里只有 ST_READY 是真正的"等活干"；PROBE/LOAD 是上电加载窗口，
+     * SAVE/VERIFY/SCAN 是正在用总线——都不允许复位打断。 */
+    return (me->resolved && (me->phase == ST_READY));
+}
+
+/*..........................................................................*/
 svc_status_t App_Store_SetName(char const *name, char const *value) {
     Store *me = &l_store;
     int16_t id;

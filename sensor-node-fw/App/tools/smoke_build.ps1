@@ -73,7 +73,7 @@ $inc = @(
     (Join-Path $Root 'Drivers\CMSIS\Device\ST\STM32F1xx\Include'),
     (Join-Path $Root 'Drivers\CMSIS\Include')
 )
-foreach ($layer in @('App\app', 'App\service', 'App\driver', 'App\bsp', 'App\component')) {
+foreach ($layer in @('App\app', 'App\app_command', 'App\service', 'App\driver', 'App\bsp', 'App\component')) {
     $d = Join-Path $Root $layer
     if (Test-HasHeader $d) {
         $inc += $d
@@ -97,7 +97,7 @@ $common = @('-mcpu=cortex-m3', '-mthumb', '-std=c11', '-O1', '-Wall',
 # -------------------------------------------------------------------- 源文件清单
 $src = @()
 $src += @(Get-ChildItem (Join-Path $Root 'Core\Src') -Filter *.c -File | Select-Object -ExpandProperty FullName)
-foreach ($layer in @('App\app', 'App\service', 'App\driver', 'App\bsp', 'App\component')) {
+foreach ($layer in @('App\app', 'App\app_command', 'App\service', 'App\driver', 'App\bsp', 'App\component')) {
     $src += @(Get-CFiles (Join-Path $Root $layer))
 }
 $src += @(Get-ChildItem (Join-Path $Root 'Drivers\STM32F1xx_HAL_Driver\Src') -Filter *.c -File |

@@ -21,6 +21,7 @@ enum AppActorPrio {
     APP_BLE_PRIO,           /* AO_Ble：蓝牙配置、协议和上报 */
     APP_MODEM_PRIO,         /* AO_Modem：4G 入网、MQTT 与云业务 */
     APP_STORE_PRIO,         /* AO_Store：掉电参数存储（后台作业，最低优先级） */
+    APP_SYSTEM_PRIO,        /* AO_System：系统级动作（延迟复位，只做检查）   */
     APP_MAX_PRIO
 };
 

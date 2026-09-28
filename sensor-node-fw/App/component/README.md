@@ -2,7 +2,7 @@
 title: 可移植通信组件规范
 status: 进行中
 owner: 待填
-updated: 2026-09-19
+updated: 2026-09-27
 ---
 
 # 可移植通信组件规范
@@ -32,6 +32,7 @@ backend/ble_vg6328.c   VG6328 AT、URC 与 UUID 配置差异
 |---|---|---|
 | `APP_CFG_BLE_BACKEND` | `BLE_COMPONENT_BACKEND` | 编译期芯片后端选择 |
 | `APP_CFG_BLE_TRACE_ENABLE` | `BLE_COMPONENT_TRACE_ENABLE` | 组件诊断信息开关 |
+| `APP_CFG_BLE_TRACE_RX` | `BLE_COMPONENT_TRACE_RX_ENABLE` | 把模组发来的每一行原样打进日志（排障开关，默认开；见第 6 节） |
 | `APP_CFG_BLE_JSON_MAX` | `BLE_COMPONENT_JSON_MAX` | 单条完整 JSON 最大字节数 |
 | `APP_CFG_BLE_MAX_PARAMS` | `BLE_COMPONENT_MAX_PARAMS` | 参数表最大项目数 |
 | `APP_CFG_BLE_TX_DEPTH` | `BLE_COMPONENT_TX_DEPTH` | 待发送 JSON 队列深度 |
@@ -189,6 +190,8 @@ UART 配置为 115200 8N1。先确认 `AT` 探测成功，再确认名称、UUID
 
 调试由工程级 `APP_CFG_BLE_TRACE_ENABLE` 控制，经 `ble_component_config.h` 映射为组件内部的 `BLE_COMPONENT_TRACE_ENABLE` 和 `BLE_TRACE(component, text)`。输出只经过注入的 `BlePort.trace()`；组件不得直接调用 `printf`。当前 STM32 适配把 trace 接到现有异步 `LOG_D`，因此还会受 `APP_CFG_LOG_ENABLE` 与 `APP_CFG_LOG_LEVEL` 控制，任一开关关闭后对应调用在编译期消失。
 
+另有 `APP_CFG_BLE_TRACE_RX`（→ `BLE_COMPONENT_TRACE_RX_ENABLE`，2026-09-28 加）：**把模组发来的每一行原样打进日志**，用于区分「手机压根没连上」与「连上了但那条通知我们不认识」——`BLE_Protocol_Line()` 对认不出的行是静默丢弃的，没有它现场只能猜（4G 侧的 `APP_CFG_MODEM_TRACE_URC` 是同款开关，当初靠它抓出 `#51`）。含 `{` 的行是小程序 JSON 载荷（auth 请求带 PIN），**只打占位符**。
+
 后端用 `BLE_COMPONENT_BACKEND` 编译期选择。更换蓝牙芯片时只新增 `backend/ble_<chip>.c`，不得复制或改写小程序协议、参数模型和上报逻辑。产品 SN、PIN、名称、UUID、型号与批次通过 `BleConfig` 传入；通用组件中禁止固化凭据。
 
 当前工程所有可调项统一放在 `App/app/app_config.h` 的 `APP_CFG_BLE_*` 区域，包括功能/后端/trace、UART 与环形缓冲、JSON/参数/发送队列/帧/分片/RX 预算，以及启动、AT 超时、探测重试、模组重启和上报周期。`ble_component_config.h` 只负责把这些工程宏映射到组件命名空间；迁移到 AT32、GD32 或 51 时只需调整这一个配置头并实现 `BlePort`。
@@ -267,9 +270,9 @@ component/modem/
     └── modem_mn316.c       中移芯昇 NB-IoT：主题字符串 + 十六进制负载
 ```
 
-每个固件只编入一个后端（`#if` 排除其余两份，不产生代码也不占 Flash）。业务协议（逻辑主题、上报报文、下行 `ping/get/set` 分发）只出现在 `modem_component.c`；具体 AT 命令、URC 与错误映射只能出现在 `backend/`。后端不持有任何全局可变状态，主题序号、重试游标与补救标志都放在 `ModemComponent` 里。
+每个固件只编入一个后端（`#if` 排除其余两份，不产生代码也不占 Flash）。业务协议（逻辑主题、上报报文、下行 `ping/get/set` 分发，以及平台 AT 命令下行的拆包与应答拼装）只出现在 `modem_component.c`；具体 AT 命令、URC 与错误映射只能出现在 `backend/`。后端不持有任何全局可变状态，主题序号、重试游标与补救标志都放在 `ModemComponent` 里。
 
-核心是**非阻塞**的：`Modem_Component_Process()` 只做「读走串口已有字节 → 组行喂给 AT 引擎 → 比较期限」，三步分别在三次调用里发生，任何一次调用都不等待模组。连接过程被表达成一张线性**步骤表** `ModemStep`，每步给出命令、期望应答标记、应答超时、重发间隔与总预算：
+核心是**非阻塞**的：`Modem_Component_Process()` 只做「读走串口已有字节 → 组行喂给 AT 引擎 → 比较期限」，三步分别在三次调用里发生，任何一次调用都不等待模组。连接过程被表达成一张线性**步骤表** `ModemStep`，每步给出命令、期望应答标记、应答超时、重发间隔与总预算；必要时还可在本步成功后增加非阻塞稳定等待：
 
 | 执行方式 | 语义 |
 |---|---|
@@ -278,9 +281,102 @@ component/modem/
 | `MODEM_STEP_REPEAT` | 失败后按 `retry_ms` 重发，直到尝试次数与 `budget_ms` 都用尽 |
 | `MODEM_STEP_TOPIC` | 按 `topic_cursor` 逐条下发主题，没有更多主题时自动推进整步 |
 
+MN316 在清理 MQTT 客户端之前先发送 `AT+MQTTSTAT?`，并按手册（MQTT 用户手册 §2.3）的取值分三档：状态 5 = 已连接，说明 MCU 虽然重启但模组云会话仍在，核心跳过 `MQTTDISC` / `MQTTDEL` / `MQTTCFG` / `MQTTOPEN` 直接进入主题处理；状态 3/4/6/7 = 发 Connect 等 ack / 正在重连 / 建 TCP 中 / TCP 已建立，属于**连接正在路上**，只按 `APP_CFG_MODEM_MQTT_STATE_POLL_MS` 重问而不打断，等满 `APP_CFG_MODEM_MQTT_STATE_TIMEOUT_MS` 仍未到 5 才按未连接继续；状态 0/1/2 = 明确未连接，直接走重建。重建路径中，`AT+MQTTCFG` 成功后不会立即发送 `AT+MQTTOPEN`：先用 `APP_CFG_MODEM_MQTT_OPEN_SETTLE_MS` 做非阻塞稳定等待；若收到 `+MQTTOPEN:FAIL`，再按 `APP_CFG_MODEM_MQTT_OPEN_RETRY_MS` 退避，最多尝试 `APP_CFG_MODEM_MQTT_OPEN_ATTEMPTS` 次。重试用尽后仍交给 AO 的整套重连与断电恢复流程，不把失败误判成 `READY`。
+
+`AT+MQTTDEL` 的 `+CME ERROR:8002` 在手册（AT 命令用户手册 §11.1，第 132 页）里的定义是「操作不允许，通常为状态机不符合」——是可等待的瞬时状态，因此计划表把它声明成 `MODEM_STEP_OPTIONAL_REPEAT`：按 `APP_CFG_MODEM_MQTT_TEARDOWN_RETRY_MS` 重试 3 次，用尽后继续下一步而不是判整条连接失败。相邻两条 AT 之间另有 `APP_CFG_MODEM_AT_GAP_MS` 的最小间隔，对应手册「只有前一个 AT 命令执行完毕，才能执行下一个 AT 命令」的要求。
+
+### 公网可达性探测（`netprobe`，2026-09-27）
+
+`+MQTTOPEN:FAIL` 的手册定义只有一句「连接服务器失败」，它**区分不了**两件结论完全相反的事：这张卡根本出不了公网（定向卡 / 策略拦截），还是只是连不上我们这台服务器。为此在 `AT+CGCONTRDP`（PDP）之后插入了四步**裸 TCP 探测**，用模组自带的 socket 能力去连一个**与业务无关**的公网地址：
+
+```text
+AT+NSOCR="STREAM",6,6003,1     → +NSOCR:<id> / OK   netprobe socket <id> created
+AT+NSOCO=<id>,223.5.5.5,53     → OK                 netprobe connecting 223.5.5.5:53 (start)
+AT+NSOSD=<id>,4,41424344       → +NSOSD:<id>,4      netprobe … TCP send accepted (socket connected)
+AT+NSOCL=<id>                  → OK                 netprobe socket <id> closed
+```
+
+> [!warning] 两条命令写法都是踩过坑才定下来的
+> **① 命令名是 `AT+NSOSD`，不是 `AT+NSOD`。** 《MN316_通信流程示例》第 22 页的示例写成了
+> `AT+NSOD`，**那是笔误**；AT 命令用户手册第 5 章（第 78~85 页）的命令表里只有
+> `5.2 AT+NSOST`（发 UDP）和 `5.6 AT+NSOSD`（发 TCP）。发错名字会**立刻**回
+> `+CME ERROR:4`（不支持的操作）——「立刻」很关键，它不是超时。
+> **② 只用三个参数，不要填 `<flag>`/`<sequence>`。** 语法是
+> `AT+NSOSD=<socket>,<length>,<data>[,<flag>[,<sequence>]]`，第 4 个位置是 `<flag>`，
+> 合法值只有 `0x100/0x200/0x400`；填 `4`（想当 `<sequence>` 用、好换回 `+NSOSTR`）会被回
+> `+CME ERROR:8001`（输入的 AT 命令参数不合法）。第 84 页示例 `AT+NSOSD=0,5,ABCDEF1234,1`
+> 与它自己的语法自相矛盾，别照抄示例。三参数的**成功响应是手册明写的
+> `+NSOSD:<socket>,<length>`**，用它当成功标记就够了。
+> 数据格式是**十六进制**——由 `AT+NSOCFG` 的 `<input_mode>` 确认（手册第 86 页：「发送数据
+> 时使用的数据格式，**默认为十六进制**」）。
+
+**判据**：`AT+NSOCO` 回的 `OK` **不是**「连上了」——手册 §5.5（第 83 页）对它的批注是「命令解析正确，**开始**连接远程服务器」。真正能说明问题的是 `AT+NSOSD` 的回执：拿到 `+NSOSD:<id>,<len>` 就说明模组已经把数据交给一条**已建立的 TCP 连接**；若 socket 还停在 connecting，会回 `+CME ERROR:8002`（操作不允许，状态机不符合）。
+
+读法：
+
+| 现象 | 结论 |
+|---|---|
+| 出现 `netprobe … TCP send accepted (socket connected)` | 这张卡**能上公网**（TCP 已建立）→ 问题在业务服务器/平台那一侧 |
+| `AT+NSOSD` 回 `+CME ERROR:8002`（操作不允许，状态机不符合） | socket 卡在 connecting → SYN 没得到回应 → **卡出不了公网** |
+| 连 `netprobe socket N created` 都没有 | `AT+NSOCR` 就没通过，先查 socket 是否被上次占用（手册第 24 页：最多 2 个） |
+
+四个步骤全部是 `OPTIONAL`（`SEND` 为 `OPTIONAL_REPEAT` ×3），**探测失败绝不影响后面的 MQTT 流程**，只打日志（`LOG_D`，受 `APP_CFG_LOG_LEVEL` 与 `APP_CFG_MODEM_TRACE_ENABLE` 两级过滤）。
+
+> [!warning] 当前状态：**已关闭**（`APP_CFG_MODEM_NET_PROBE_ENABLE = 0`）
+> 这套探测在 2026-09-27 查出结论后已经关掉，**默认不参与编译进计划表**——那四步是用 `#if` 包住的，
+> 所以关闭时 `plan_count` 与 `step k/N` 的编号**完全回到 `#if` 之外的那张表**（当前 **23 步**，
+> `AT+MQTTOPEN` 是第 **21** 步），行为与加它之前一模一样。以后遇到「某张卡连不上」时把该宏改回 `1` 即可复用同一套对照方法；
+> 打开后编号会整体 +4（`AT+MQTTOPEN` 变第 25 步）、成功路径约多 6~7 s，属诊断态。
+> 探测目标在 `APP_CFG_MODEM_NET_PROBE_HOST` / `_PORT`（想改成自家服务器时只改这两行）。
+
 连接计划完成后进入 `READY`：先消化已收全的下行通知（分发 `ping` → `pong`、`get` → 读属性应答、`set` → 写配置应答），再按需发布应答与周期数据。**上行发布失败不再立刻判定链路不可用**（2026-09-20 改）：先按 `MODEM_COMPONENT_UPLINK_RETRY` / `MODEM_COMPONENT_UPLINK_RETRY_MS` 退避重试，重试用尽才转入 `FAILED` 交回上层重连。原因：实测 NB-IoT 上一次上行抖动就会让「一条上报失败 = 整条链路作废」，设备 20 分钟后进重连阶梯并因模组掉网未自愈而永久沉默。
 
-对 App 的公共入口固定为 `Modem_Component_Init/Start/Process/RequestReport/RequestCellInfo/IsReady`。`Start()` 可反复调用，用作失败重连；`RequestReport()` 与 `RequestCellInfo()` 只置请求位，不在调用点等待。
+对 App 的公共入口固定为 `Modem_Component_Init/Start/Process/RequestReport/RequestCellInfo/RequestLocation/IsReady`，外加平台 AT 命令下行用的 `Modem_Component_TakeCommand/CompleteCommand`。`Start()` 可反复调用，用作失败重连；`RequestReport()` 与 `RequestCellInfo()` 只置请求位，不在调用点等待。
+
+### 平台 AT 命令下行（`command` / `command/reply`）
+
+2026-09-27 起按平台规则对接了一条新的下行通道：订阅 `{productId}/{deviceId}/command`，
+回复发布到 `{productId}/{deviceId}/command/reply`（**不带**前导 `/`，见下）。
+
+> [!warning] 前导 `/` **按主题逐条给**（2026-09-28 订正）
+> `buildTopics()` 的拼法是 `"%s%s/%s%s"`：**最前面那个 `/` 取自 `kTopicPrefix[]`**——一张
+> **一条主题一行**的表，表里每一行对应 `app_config.h` 里**一个宏**（`APP_CFG_MODEM_TOPIC_PREFIX_*`，共 10 个，
+> 只能填 `""` 或 `"/"`，有编译期护栏）；device 与后缀之间的 `/` 由 `kTopicSuffix[]` 自带。
+> **平台要求某一条换形态时，只改 `app_config.h` 那一行，不必碰组件代码。**
+>
+> **当前取值**：**只有数据上报那一条**（`properties/report` → `/sensor-product/<did>/properties/report`）带 `/`；
+> 其余 9 条（5 条订阅 + 4 条应答，含 `command/reply`）**都不带**。
+> 依据是平台侧的**两个互不相干的主题空间**：数据上报页原文要求订阅 `/{productId}/{deviceId}/properties/report`（带 `/`）；
+> 命令交互（「AT 控制主题模板」「回复主题模板」）写的是 `{productId}/{deviceId}/…`（不带 `/`）。
+>
+> **为什么不再"按方向"一刀切**：平台侧确实有两栏会各自变动，但**"方向"不是那件事的维度**——
+> `#58`→`#62` 就是因为把它当成"发布方向统一带 `/`"，给 `command/reply` 多加了一个 `/`：
+> 设备发 5 段主题、平台按 4 段过滤器认 → 平台上停在 `WAITING_RESPONSE`、20 s 判"指令超时"（**已实测**）。
+> 逐条成表后，平台单独要求某一条换形态时，只改 `kTopicPrefix[]` 里那一行。
+>
+> 历史（别重复踩）：`#48` 把格式串由 `"/%s/%s/%s"` 改成 `"%s/%s%s"`，**顺带把 10 条主题的前导 `/` 全去掉了**
+> （`#48` 写「旧主题保持现网路由不变」，**是错的**，见 `#50`）；`#50`/`#51` 按当时实机现象记成「与当前平台一致」；
+> `#58` 一度改成全体带 `/`，`#60` 改为按方向用宏，`#64` 才收敛为**按主题**。
+>
+> **改前缀必须与平台页面同步**：订阅串一旦与平台发布串对不上，下行命令会**静默**失效（`+MQTTSUBACK` 照样回来，表现为「设备在线、订阅齐全、平台发布无回应」）。
+> 上板要看的：`AT+MQTTSUBACK` 里的主题串，以及从平台发一条 `AT` 能否回 `{"id":…,"ok":true,"data":"OK\r\n"}`。
+
+组件在这条通道上**只做两件事**，不执行命令：
+
+| 步骤 | 谁做 | 说明 |
+|---|---|---|
+| 拆包 | 组件 `dispatchDownlink()` | 用 `jsonStringUnescape()` 取出 `id` 与 `command`（转义感知：写参数命令自带引号，普通提取会在 `\"` 处截断），置 `downlink_pending` |
+| 取走 | App 层轮询 `Modem_Component_TakeCommand()` | 组件不认识参数存储，也不许依赖 QP，所以执行必须上交 |
+| 执行 | App 层（`AO_Modem`） | 命令文本喂 `SVC_At_Feed()` → `App_Command_Dispatch()`，与串口**完全同一条路** |
+| 回包 | 组件 `Modem_Component_CompleteCommand()` | 由它拼单层 JSON（含 `\r`/`\n`/`"`/`\` 转义）并排进上行队列 |
+
+应答格式按规则 3.3 / 3.4：成功是 `{"id":…,"ok":true,"data":"…OK\r\n"}`，失败是 `{"id":…,"ok":false,"error":"ERROR","data":"…ERROR\r\n"}`。`data` 是**完整原始 AT 回复**并按 JSON 转义；本设备的失败形态是 `+CME ERROR:<n>`，交给 App 层时会在它后面补一行 `ERROR` 收尾（规则 4.2 允许「可选错误行 + ERROR」）。
+
+> [!note] 主题拼装的两处 `/` 别弄混（2026-09-28 订正）
+> 拼法是 `"%s%s/%s%s"`：**最前面那个 `/` 来自 `kTopicPrefix[]`（按主题逐条给，命令通道不带）**；
+> product 与 device 之间的 `/` 是格式串里的分隔符；**device 与后缀之间的 `/` 由 `kTopicSuffix[]` 各自携带**——
+> **只改一处、另一处漏改，就会拼出「中间少一个斜杠」或「多一个前导斜杠」的错主题**，
+> 而模组对订阅照样回 `+MQTTSUBACK`，症状是"设备在线、订阅齐全、平台没反应"。
 
 | 本工程配置 | 组件内部宏 | 含义 |
 |---|---|---|
@@ -293,6 +389,8 @@ component/modem/
 | `APP_CFG_MODEM_LINE_SIZE` | `MODEM_COMPONENT_LINE_MAX` | 单行文本装配缓冲 |
 | `APP_CFG_MODEM_TOPIC_SIZE` | `MODEM_COMPONENT_TOPIC_MAX` | 单个主题名字节数 |
 | `APP_CFG_MODEM_RX_BUDGET` | `MODEM_COMPONENT_RX_BUDGET` | 每次 `Process` 最多读取的串口字节数 |
+| `APP_CFG_MODEM_DOWNLINK_ID_SIZE` | `MODEM_COMPONENT_DOWNLINK_ID_MAX` | 平台下行 `id` 的保存长度（原样回显） |
+| `APP_CFG_MODEM_DOWNLINK_COMMAND_SIZE` | `MODEM_COMPONENT_DOWNLINK_COMMAND_MAX` | 平台下行 `command` 的保存长度（**小于平台的 256**：本设备 AT 行上限只有 64，存更长没有意义） |
 | `APP_CFG_MODEM_COMMAND_TIMEOUT_MS` | `MODEM_COMPONENT_TIMEOUT_MS` | 单条命令默认应答超时 |
 | `APP_CFG_MODEM_SIM_WAIT_MS` 等 | `MODEM_COMPONENT_*` | 入网、附着、通道与重连各阶段预算 |
 | `APP_CFG_MODEM_SAMPLE_INTERVAL_MIN/MAX` | `MODEM_COMPONENT_SAMPLE_MIN/MAX` | 可写参数 `sample_interval` 的范围 |
@@ -332,12 +430,16 @@ MN316 是**标准 3GPP 系**模组（`+CPIN?` / `+CGATT?` / `+CGDCONT?` / `+CGPA
 | 小区标识宽度 | CI 是 **8 位零填充**十六进制（如 `02516E85`），与 ML307C 的 7 位 ECI 形态不同 | 平台侧解析注意宽度，不要按 7 位写死 |
 | MCC / MNC | `AT+COPS?` → `+COPS:0,2,"46000",9`，**可取** | 若要做平台侧小区反查，MN316 能直接提供 mcc/mnc |
 | MQTT 打开 | `AT+MQTTOPEN=1,1,0,0,0,"",""` 先回 `OK`，约 3 s 后**异步**回 `+MQTTOPEN:OK` | 期望标记就是 `+MQTTOPEN:OK`，靠它而不是那声 `OK` 判成功 |
-| MQTT 状态 | 已连接时 `AT+MQTTSTAT?` → `+MQTTSTAT:5` | `apply` 判 `value == 5`，与真机一致 |
-| MQTT 订阅 | `AT+MQTTSUB="<主题>",<qos>,0` → `OK`，随后异步 `+MQTTSUBACK:<id>,<qos>,<主题>` | 期望标记用 `OK` 即可（`OK` 先到） |
-| 上行发布 | `AT+MQTTPUB="<主题>",<qos>,0,0,<原长>,"<HEX>"` → `OK`，**负载是 HEX 编码** | `mn316PublishBuild()` 用 `ModemAt_HexEncode()`，改动时别把编码去掉 |
+| MQTT 状态 | 已连接时 `AT+MQTTSTAT?` → `+MQTTSTAT:5` | `apply` 判 `value == 5`，与真机一致。**但 5 只是"会话还活着"**，能不能复用还要看下一条 |
+| MQTT 配置读回 | `AT+MQTTCFG?` → `+MQTTCFG:183.230.40.39,6002,4069959,60,75829,***,*,1,0`（host, port, **clientId**, keepalive, user, 掩码密码…；**密码由模组自己打星号**） | `MODEM_OP_MQTT_CFG_QUERY` 用它读回 host/port/clientId 与当前身份比对：**一致才允许复用会话**（`remote_cfg_matches`）。手册 §2.1 第 9 页。不同型号的字段个数可能有差异，解析只取前 3 个 |
+| MQTT 订阅 | `AT+MQTTSUB="<主题>",<qos>,0` → `OK`，随后异步 `+MQTTSUBACK:<id>,<qos>,<主题>` | **期望标记必须用 `+MQTTSUBACK`**（代码就是这么写的）。不要图省事改成 `OK`：`OK` 只说明命令被受理，**不代表订阅真的成功了**——`#51` 就是因为只看 `OK` 而错过「订错主题」，白跑一整轮 |
+| 下行通知 | **2026-09-27 首次实测确认**：`+MQTTPUBLISH:<a>,<b>,<c>,<d>,<主题>,<负载字节数>,<负载>`，例如 `+MQTTPUBLISH:0,1,0,1,sensor-product/869413084698157/command,67,{"id":"…","command":"AT"}`（命令通道的主题**不带**前导 `/`，与 `kTopicPrefix[]` 当前对 `MODEM_TOPIC_COMMAND` 的取值一致） | `mn316UrcStarts/LocatePayload/UrcComplete` 三件套都是按这个形态写的，**名字与字段位置已对上真机**；负载按声明字节数收全（不按换行），因为负载里可能含换行 |
+| MQTT 操作超时 | 订阅迟迟没回 `+MQTTSUBACK` 时，模组会报 `+MQTTTO:<n>`（超时窗口由计划里的 `AT+MQTTTO=20` 设定） | 见到 `+MQTTTO:` 说明会话在超时，不是命令写错；`rx="OK|+MQTTTO:3"` + `reason=2` 就是这个场景 |
+| 上行发布 | `AT+MQTTPUB="<主题>",<qos>,0,0,<原长>,"<HEX>"` → **`OK`**（QoS 0/1/2 都是这一条），**负载是 HEX 编码** | `mn316PublishBuild()` 用 `ModemAt_HexEncode()`，改动时别把编码去掉。**期望标记恒为 `OK`**——手册 §2.5（第 14 页）写明成功响应就是 `OK`，且**没有 ACK 型 URC**（对照 §2.4 `+MQTTSUBACK`、§2.6 `+MQTTUNSUBACK`；发布的 QoS2 流程只有 `+MQTTPUBREC/REL/COMP`）。曾经按 QoS 选标记、给 QoS 1 等 `+MQTTPUBACK`，导致 4 条 `*/reply` 每条都超时（`#59`，2026-09-28 修） |
+| 上行发布失败 | `AT+MQTTPUB` 失败回 `+CME ERROR:<err>` 或 `ERROR` | 引擎按 `ERROR`/`+CME` 判失败；**只有 `OK` 才算成功**，别再加别的期望标记 |
 | 基站定位 | `AT+LBSCFG` → `+CME ERROR: 4`，**本模组无此指令** | MN316 计划表里本来就没有 `MODEM_OP_LBS_MODE`（NT26 才有），且定位钩子为空 |
 | `AT+WORKLOCK` | 只支持写入（`AT+WORKLOCK=1` → OK），查询形式回 `+CME ERROR:8001` | 不要用 `AT+WORKLOCK?` 判状态 |
-| 设备标识 | `AT+CGSN=1` → `869413084698153`，等于 `APP_CFG_MODEM_DEVICE_ID` | 这是配 `DEVICE_ID` 时对应的那块模组 |
+| 设备标识 | `AT+CGSN=1` → `+CGSN: "869413084698157"`（**当前固件读完就丢**） | 2026-09-28 起 MQTT 的 `clientId`/`deviceId` 取自**参数 `sn`**（产线串口刷写），不再是模组 IMEI；这一步只是 `MODEM_OP_IDENTITY` 的**诊断**用途（`mn316Apply()` 里没有 IDENTITY 分支）。将来若要把身份改回"读模组 IMEI"，就在那里补解析 |
 
 ### 基站定位（LBS）
 
@@ -353,7 +455,7 @@ MN316 是**标准 3GPP 系**模组（`+CPIN?` / `+CGATT?` / `+CGDCONT?` / `+CGPA
 
 连接计划有十几个步骤，成功路径上不打日志，上板时很容易只看到「一直没动静」。因此 `modem_component.c` 在每一步的**结论处**打一条 trace（走 `ModemPort.trace`，受 `APP_CFG_MODEM_TRACE_ENABLE` 与 `APP_CFG_LOG_LEVEL` 控制，编译期可整体消失）。
 
-**成功只打进度，命令与应答只在异常路径出现**（2026-09-19 按使用反馈调整）：成功时每步都带上 `cmd`/`rx` 会把串口刷满——连接计划十几步（ML307C 17 步、**MN316 22 步**——2026-09-27 在 `IP_ADDRESS` 之后插了一步只读的 PDP/APN 诊断，故由 21 步变 22 步），主题步还要按主题逐条展开，一次连接就是二十多行；而排查时真正要看的只是「卡在第几步」。所以（下面的例子取自 ML307C 的 17 步，`N` 以实际日志为准）：
+**成功只打进度，命令与应答只在异常路径出现**（2026-09-19 按使用反馈调整）：成功时每步都带上 `cmd`/`rx` 会把串口刷满——连接计划十几步（ML307C 17 步、**MN316 23 步**——2026-09-27 在 `IP_ADDRESS` 之后插了一步只读的 PDP/APN 诊断、2026-09-28 又在 `MQTT_STATE` 之前插了一步 `AT+MQTTCFG?` 读回比对），主题步还要按主题逐条展开，一次连接就是二十多行；而排查时真正要看的只是「卡在第几步」。所以（下面的例子取自 ML307C 的 17 步，`N` 以实际日志为准）：
 
 ```text
 4g-core: connecting, 17 steps                                  ← 连接开始时给出总步数
@@ -399,7 +501,25 @@ MN316 是**标准 3GPP 系**模组（`+CPIN?` / `+CGATT?` / `+CGDCONT?` / `+CGPA
 > 但实现有差异；`mn316ReadQuotedField()` 只认引号字段）。两者在日志上同形，结论却相反，
 > 所以必须把 `+CGCONTRDP:` 那一行原样打出来。**判读时以 `raw=` 为准。**
 
-> [!success] 本次联调结论（2026-09-27）：PDP 上下文**没有默认网关**——问题定位到网络/卡侧
+> [!warning] ⚠ 本结论已于 2026-09-27 被实测**推翻**，保留原文仅作排查过程记录
+> 下一条 `#40` 之后的实测（见 [[08-改动日志]] 的 `#41`）显示：**移动卡在同样 `gw=none`
+> 的情况下连上了云平台**（两次冷启动均 `cloud link ready`），电信卡也在另一次冷启动里
+> 3.36 s 就连上。因此「没有默认网关 → 包出不去 → TCP 静默超时」这条推断**不成立**：
+> `gw=none` 是这些卡/这套网络对 `+CGCONTRDP` 的**常规呈现**，不是故障。
+> 真正稳定复现的差异在**电信卡这一侧**。2026-09-27 用公网可达性探测拿到了干净对照
+> （同一块板、同一份固件、同一个目标 `223.5.5.5:53`，只换卡）：
+>
+> | 卡（APN） | 结果 |
+> |---|---|
+> | 移动 `cmiot.mnc004` | `netprobe … TCP send accepted (socket connected)` → 后续 `cloud link ready` |
+> | 电信 `ctnb.MNC011` | `AT+NSOSD` 回 `+CME ERROR:8002`（操作不允许，状态机不符合）→ socket 卡在 connecting |
+>
+> 两张卡都是 `gw=none`，电信卡注网/附着/拿 IP 也全部正常，却**连不到任意公网地址**。
+> 因此结论是：**该电信卡的数据通路被限制（定向卡 / 签约限制），属运营商侧，不是固件问题**。
+> 下面的逐字段解读仍然有效（网关字段确实是空的、原文格式确实是那样），失效的只是由它
+> 推出的结论。
+
+> [!success] 本次联调结论（2026-09-27，**已被上方实测推翻**）：PDP 上下文**没有默认网关**——问题定位到网络/卡侧
 > 实测日志：
 >
 > ```text
@@ -414,15 +534,17 @@ MN316 是**标准 3GPP 系**模组（`+CPIN?` / `+CGATT?` / `+CGDCONT?` / `+CGPA
 >
 > 由此可确定：
 > 1. **网关确实是空的**，不是解析器的问题（原文里是显式的 `""`）；
-> 2. 设备只有 `26.0.0.0/8` 这一个直连网段，而 MQTT 服务器 `43.154.189.189`（腾讯云段）
->    **不在其中** → 没有默认路由 → 包出不去 → TCP 连接**静默超时**（与实测「模组折腾
->    几十秒才报 `+MQTTOPEN:FAIL`」完全吻合）；
-> 3. 因此这**不是固件问题、不是 DNS、更不是服务器问题**——网络给了 IP 和 DNS，
->    却没有给到公网的路由。**换服务器或端口完全无用，包根本出不去。**
+> 2. ~~设备只有 `26.0.0.0/8` 这一个直连网段，而 MQTT 服务器 `43.154.189.189`（腾讯云段）
+>    **不在其中** → 没有默认路由 → 包出不去 → TCP 连接**静默超时**~~ ← **此条已被推翻**，
+>    见上方警告：`gw=none` 时移动卡照样连上，说明该字段不能用来判断"有没有公网路由"；
+> 3. ~~因此这**不是固件问题、不是 DNS、更不是服务器问题**——网络给了 IP 和 DNS，
+>    却没有给到公网的路由。~~ ← **此条已被推翻**。固件侧确实存在问题（见 `#38`/`#39`/`#40`：
+>    只认 MQTTSTAT=5 会拆掉正在建立的连接、8002 被一步放行、AT 之间零间隔）；
+>    同时电信卡与移动卡的表现确实不同。
 >
-> 下一步属**用户侧的运营商确认**：这张卡是否开通了公网（非定向）访问、为什么该上下文
-> 不下发默认网关、需要显式配置哪个 APN 才能拿到公网路由。固件侧的「显式配 APN +
-> 重新激活 PDP」路径尚未实现（需要 APN 名字）。
+> **当前（2026-09-27 晚）的定位**：问题收敛到**电信卡侧**——移动卡多次测试正常，电信卡
+> 多次重连后仍停在 `+MQTTREC:n`（模组自身重连）。下一步是向售卡方确认该卡是**公网卡
+> 还是定向卡**，而不是继续在固件里找原因。
 
 **用的是 `AT+CGCONTRDP=0` 而不是 `AT+CGDCONT?`**（2026-09-27 第二步切换）。原因：`AT+CGDCONT?` 先跑过一轮，答复是**APN 字段为空**，它只说明「没有**静态配置**的 APN」，**回答不了「网络实际在用哪个 APN」**。而 `AT+CGCONTRDP=0` 回的是**已激活上下文**的参数（`<cid>,<bearer_id>,"<apn>","<local_addr>","<gateway>","<dns1>",…`），一次给出实际 APN + 本地 IP + 网关 + DNS，正好覆盖要判读的三件事：APN 是公网名还是定向专网名；有没有网关（有 IP 没网关 = 没有公网路由）；DNS 是否下发。
 

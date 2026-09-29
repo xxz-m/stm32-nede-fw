@@ -603,8 +603,25 @@ bool App_Command_Dispatch(AppCommandRequest const *request,
         }
 
         /* `AT&F`：全部恢复编译期默认值。这也是一次变更，会让 config_version 继续自增
-         * （ver 只增不减），不会倒回 0 */
+         * （ver 只增不减），不会倒回 0。
+         *
+         * NOTE (为什么"仅串口"，2026-09-29 收紧)：`AT&F` 不是"写某个参数"，因此躲过了
+         *   `writeAllowedFrom()` 的来源判据；但它重置的是**全部**参数，其中包含身份类的 `SN`。
+         *   云端一旦能发，后果是一条远程命令就把设备"变砖"：
+         *     `SN` 恢复成出厂默认 → `identityUsable()` 判不可用 → `AO_Modem` **主动停掉 4G**
+         *     → 云端从此联系不上这台设备，只能拿串口重新刷 `SN` 才能救回来。
+         *   所以它与身份参数同一档待遇：**只允许串口**（必须物理接触本机）。
+         * NOTE (只认裸命令)：`AT&F=…` 之类走 SET/TEST 分支，不受这里影响。
+         * NOTE (为什么先判来源再判存储就绪)：越权与"存储没准备好"是两回事，先回 4 更准确
+         *   （与 SET 分支同一条口径）。 */
         case SVC_AT_KIND_DEFAULTS:
+            if (request->source != APP_COMMAND_SOURCE_SERIAL) {
+                LOG_W("cmd: AT&F refused for this source");
+                return putText(result,
+                               APP_COMMAND_RESULT_ERROR,
+                               4U,
+                               "+CME ERROR:4\r\n");
+            }
             if (!App_Store_ResetDefaults()) {
                 return putText(result,
                                APP_COMMAND_RESULT_ERROR,

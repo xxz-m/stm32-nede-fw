@@ -2,7 +2,7 @@
 title: 可移植通信组件规范
 status: 进行中
 owner: 待填
-updated: 2026-09-27
+updated: 2026-09-29
 ---
 
 # 可移植通信组件规范

@@ -389,6 +389,18 @@ static QState active(Modem * const me, QEvt const * const e) {
                  * 而设备其实每 20 分钟才发一次。写它不会改变节奏（下一段代码说了算）。 */
                 me->component.sample_interval_min = reportIntervalMin();
                 logReady(me);
+                /* NOTE (连上后立刻上报一帧，2026-09-29)：以前第一帧要等满一个上报周期
+                 *   （`TRANSINTVL` 出厂默认 20 分钟），现场看到的是「4G 明明连上了，平台
+                 *   却半天没有数据」——分不清是链路没通、还是周期没到。上电先报一次当前值：
+                 *   平台立刻有卡片与折线，也让「数据是不是新的」有了明确起点。
+                 * NOTE (把计数归零)：保证下一帧仍从此刻起算一个**完整**周期，这次额外汇报
+                 *   不会把后续节奏提前。
+                 * NOTE (尊重停报开关)：平台用可写属性 `report_enabled` 临时停报时，
+                 *   这里同样不发——否则「停报」在上电那一刻会被绕过。 */
+                if (me->component.report_enabled) {
+                    me->reportTicks = 0U;
+                    Modem_Component_RequestReport(&me->component);
+                }
             }
             /* 周期上报与小区信息刷新：只置请求位，真正的 AT 往返由组件在
              * 下一个 Process 周期发起，AO 不等待。间隔每拍从参数影子取一次，

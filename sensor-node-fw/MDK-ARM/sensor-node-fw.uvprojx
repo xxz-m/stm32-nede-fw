@@ -626,7 +626,7 @@
         <Group>
           <GroupName>::CMSIS</GroupName>
         </Group>
-        <Group>
+              <Group>
           <GroupName>App</GroupName>
           <Files>
             <File>
@@ -876,7 +876,7 @@
             </File>
           </Files>
         </Group>
-      </Groups>
+</Groups>
     </Target>
   </Targets>
 

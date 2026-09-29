@@ -172,9 +172,12 @@
 #define APP_CFG_BLE_RESTART_PROBE_ATTEMPTS    (6U)
 #define APP_CFG_BLE_REPORT_PERIOD_S           (60U)
 
-/*! 产品身份与小程序配置；通用组件内不得写死这些值。 */
+/*! 产品身份与小程序配置；通用组件内不得写死这些值。
+*  NOTE (2026-09-28 删掉 `APP_CFG_BLE_NAME`)：产品决定**蓝牙广播名就是 SN**，于是宏与
+*   参数槽位都不再需要「独立的广播名」（见 svc_param.h 的退役槽位 NOTE）。原来的
+*   `APP_CFG_BLE_NAME` 与 `APP_CFG_BLE_SN` 默认值恰好相同，留着它反而会被误认为
+*   「改这个宏就能改广播名」，而实际广播名取 `SVC_PARAM_BLE_SN`。 */
 #define APP_CFG_BLE_SN                        "VWA2608A0013"
-#define APP_CFG_BLE_NAME                      "VWA2608A0013"
 #define APP_CFG_BLE_PIN                       "062500"
 #define APP_CFG_BLE_SERVICE_UUID              "CDAB0000-1234-5678-1234-56789ABCDEF0"
 #define APP_CFG_BLE_DEVICE_NAME               "VWA-0013"

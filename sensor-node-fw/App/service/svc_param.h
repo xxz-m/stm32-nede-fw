@@ -52,9 +52,17 @@
 *   自 2026-09-28 起是**设备身份**（MQTT `clientId`/主题里的 `deviceId` + 蓝牙认证应答里的
 *   `sn`），不再只是蓝牙参数。名字保留是为了不动 EEPROM 里的字段顺序（记录按 id 编码），
 *   语义以本条与 `SVC_Param_IsValidDeviceId()` 为准。 */
+/*! NOTE (退役槽位 `SVC_PARAM_BLE_NAME`，2026-09-28)：产品决定**广播名就是 SN**，于是这个
+*   槽位不再有独立语义。但**不能从表里删掉它**——记录按 id 定位字段，删中间一项会让后面
+*   `pin`/`uuid`/`devname`… 的 id 全体前移，介质里已有的旧记录会被解码到错误的字段上。
+*   所以保留 id 与容量，只做两件事：①`ble.c` 的广播名改读 `SN`（单一真相，物理上不可能
+*   不一致）；②`SVC_Param_IsRetired()` 把它挡在命令接口之外。 */
+/*! NOTE (为什么用「退役」而不是「只读」)：只读会让 `AT+NAME?` 回一个**不等于实际广播名**
+*   的值（实际广播名现在是 SN）——那是指令说谎，比报错更坏。退役 = 这个名字对外不存在，
+*   命令层回 `+CME ERROR:1`（与「参数名不在表里」同码），唯一入口是 `AT+SN=`。 */
 typedef enum {
     SVC_PARAM_BLE_SN = 0,   /*!< **设备序列号**（产线串口刷；平台 deviceId 与蓝牙 sn 共用）*/
-    SVC_PARAM_BLE_NAME,     /*!< 蓝牙广播名                        */
+    SVC_PARAM_BLE_NAME,     /*!< **已退役**（2026-09-28）：仅为介质兼容保留，不对任何来源暴露 */
     SVC_PARAM_BLE_PIN,      /*!< 小程序认证 PIN（凭据，注意纪律）  */
     SVC_PARAM_BLE_UUID,     /*!< Service UUID                      */
     SVC_PARAM_BLE_DEVNAME,  /*!< 设备名                            */
@@ -135,6 +143,17 @@ char const *SVC_Param_Name(uint8_t id);
 
 /** @brief 取参数项的容量（含 '\0'）。id 非法返回 0。 */
 uint8_t SVC_Param_Cap(uint8_t id);
+
+/** @brief 该参数项是否**已退役**（当前只有 `name`：广播名已并入 `SN`）。
+*
+* @param id 参数 id
+* @return true = 该 id 仍存在于表中（为了介质兼容），但**不对任何命令来源暴露**，
+*              命令层应按「参数名不存在」处理（`+CME ERROR:1`）。
+*
+* @note 判据在本层、而「回什么错误码」在命令层：本函数只说事实，不说策略。
+* @note 为什么允许 id 越界：调用方通常直接传 `SVC_Param_Find()` 的结果（可能是 -1），
+*   越界一律返回 false，省掉调用点的重复判断。 */
+bool SVC_Param_IsRetired(uint8_t id);
 
 /** @brief 取参数当前值（永远返回合法 C 字符串，不会返回 NULL）。 */
 char const *SVC_Param_Value(SvcParam const *me, uint8_t id);

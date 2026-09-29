@@ -21,7 +21,11 @@ typedef struct {
 * 中间插值会让已固化在介质上的旧记录串位（fmt 版本号只在语义变化时才动）。 */
 static ParamDesc const l_desc[SVC_PARAM_COUNT] = {
     { "sn",      SVC_PARAM_BLE_SN_CAP,      APP_CFG_BLE_SN           },
-    { "name",    SVC_PARAM_BLE_NAME_CAP,    APP_CFG_BLE_NAME         },
+    /* 退役槽位（2026-09-28）：产品决定「广播名 = SN」，本项不再有独立语义，只为介质兼容
+     * 保留 id 与容量（见 svc_param.h 的 NOTE）。默认值跟随 SN，这样即使在十六进制里翻到
+     * 这条记录也不会看到一个与设备身份无关的字符串；`APP_CFG_BLE_NAME` 宏已随之删除，
+     * 免得下一个人以为「改那个宏就能改广播名」。 */
+    { "name",    SVC_PARAM_BLE_NAME_CAP,    APP_CFG_BLE_SN           },
     { "pin",     SVC_PARAM_BLE_PIN_CAP,     APP_CFG_BLE_PIN          },
     { "uuid",    SVC_PARAM_BLE_UUID_CAP,    APP_CFG_BLE_SERVICE_UUID },
     { "devname", SVC_PARAM_BLE_DEVNAME_CAP, APP_CFG_BLE_DEVICE_NAME  },
@@ -124,6 +128,14 @@ char const *SVC_Param_Name(uint8_t id) {
 /*..........................................................................*/
 uint8_t SVC_Param_Cap(uint8_t id) {
     return (id < (uint8_t)SVC_PARAM_COUNT) ? l_desc[id].cap : 0U;
+}
+
+/*..........................................................................*/
+bool SVC_Param_IsRetired(uint8_t id) {
+    /* NOTE (为什么是白名单式的「列出退役项」)：退役是**逐项**决定的，不是 id < N 之类的
+     * 区间规则；将来再有槽位退役，在这里加一行即可，命令层的判据不用动。
+     * 当前只有 `name`（广播名已并入 `SN`），原因与介质兼容约束见 svc_param.h 的 NOTE。 */
+    return (id == (uint8_t)SVC_PARAM_BLE_NAME);
 }
 
 /*..........................................................................*/

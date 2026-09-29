@@ -324,8 +324,12 @@ bool App_Command_Dispatch(AppCommandRequest const *request,
             char name[SVC_AT_NAME_MAX];
 
             id = SVC_Param_Find(request->command.param);
-            if (id < 0) {
-                /* 参数名不在参数表之列（当前 8 个）：按 AT 惯例回 +CME ERROR:1 */
+            if ((id < 0) || SVC_Param_IsRetired((uint8_t)id)) {
+                /* 参数名不在参数表之列（当前 7 个），或者是**已退役**的槽位（`name`：
+                 * 广播名已并入 `SN`，见 svc_param.h 的 NOTE）——对调用方一律是
+                 * 「没有这个名字」，按 AT 惯例回 +CME ERROR:1。
+                 * NOTE (为什么不回一个专门的码)：退役是**本工程的内部沿革**，上位机不该
+                 *   为此写分支；对它们来说这个名字从来不存在。要读广播名就查 `AT+SN?`。 */
                 return putText(result,
                                APP_COMMAND_RESULT_ERROR,
                                1U,
@@ -365,7 +369,8 @@ bool App_Command_Dispatch(AppCommandRequest const *request,
             char name[SVC_AT_NAME_MAX];
 
             id = SVC_Param_Find(request->command.param);
-            if (id < 0) {
+            if ((id < 0) || SVC_Param_IsRetired((uint8_t)id)) {
+                /* 与读取分支同一判据：退役的 `name` 对外不存在（广播名 = `SN`） */
                 return putText(result,
                                APP_COMMAND_RESULT_ERROR,
                                1U,
@@ -408,6 +413,17 @@ bool App_Command_Dispatch(AppCommandRequest const *request,
         case SVC_AT_KIND_SET: {
             int16_t const paramId = SVC_Param_Find(request->command.param);
             bool identityChanged = false;
+
+            /* 退役槽位（`name`）排在最前：它对外**不存在**，所以既不是「越权」（4）也不是
+             * 「值非法」（2），而是「没有这个参数名」（1）——与读取分支同一口径。
+             * NOTE (为什么必须在权限判断之前)：`name` 曾经是可写的普通参数，若晚一步判，
+             *   串口那一侧（任何参数都可写）会**真的把它写进 EEPROM**，退役就成了空话。 */
+            if (SVC_Param_IsRetired((uint8_t)paramId)) {
+                return putText(result,
+                               APP_COMMAND_RESULT_ERROR,
+                               1U,
+                               "+CME ERROR:1\r\n");
+            }
 
             /* 来源权限：身份类参数（当前 `SN`）只允许串口写，云端只能读。
              * NOTE (为什么排在最前)：越权与「值非法」是两回事——先判权限，
@@ -622,10 +638,22 @@ bool App_Command_Dispatch(AppCommandRequest const *request,
                 "\"AT\",\"AT&F\",\"AT+CFG?\",\"AT+I2C?\",\"AT+VER?\",\"AT+CAD?\",\"AT+RST\",\"AT+BLESVCUUID?\"";
             size_t used;
             uint8_t id;
+            uint8_t exposed = 0U;
+
+            /* NOTE (为什么要**先数一遍**，2026-09-28)：参数个数不是 `SVC_PARAM_COUNT`——
+             *   退役槽位（`name`）仍留在参数表里（介质兼容，见 svc_param.h），但它对外不存在。
+             *   若这里报 8 个、循环里又把它列出来，平台就会照着这张表发 `AT+NAME="…"`，
+             *   然后收到 `+CME ERROR:1`：**我们自己的能力清单把自己说错了**。
+             *   判据用同一个 `SVC_Param_IsRetired()`，清单与读写测试三处的口径因此一致。 */
+            for (id = 0U; id < (uint8_t)SVC_PARAM_COUNT; ++id) {
+                if (!SVC_Param_IsRetired(id)) {
+                    ++exposed;
+                }
+            }
 
             produced = snprintf(result->raw, sizeof(result->raw),
                                 "+CAD:8,%s,%u",
-                                kFixed, (unsigned)SVC_PARAM_COUNT);
+                                kFixed, (unsigned)exposed);
             if ((produced < 0) || ((size_t)produced >= sizeof(result->raw))) {
                 return putText(result, APP_COMMAND_RESULT_ERROR, 0U, "ERROR\r\n");
             }
@@ -634,6 +662,9 @@ bool App_Command_Dispatch(AppCommandRequest const *request,
             for (id = 0U; id < (uint8_t)SVC_PARAM_COUNT; ++id) {
                 char name[SVC_AT_NAME_MAX];
 
+                if (SVC_Param_IsRetired(id)) {
+                    continue;   /* 退役参数不进能力清单 */
+                }
                 if (!nameUpper(name, sizeof(name), SVC_Param_Name(id))) {
                     return putText(result, APP_COMMAND_RESULT_ERROR, 0U, "ERROR\r\n");
                 }

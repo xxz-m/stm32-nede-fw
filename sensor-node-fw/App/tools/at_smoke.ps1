@@ -307,7 +307,8 @@ try {
     $reads = @(
         @{ Cmd = 'AT';              Pat = '^OK$';            Mask = $false },
         @{ Cmd = 'AT+SN?';          Pat = '^\+SN:"';         Mask = $false },
-        @{ Cmd = 'AT+NAME?';        Pat = '^\+NAME:"';       Mask = $false },
+        # `AT+NAME?` 不在只读清单里：广播名已并入 SN，它是退役参数，必须回 +CME ERROR:1
+        # （专门的断言在下面的「错误路径」段）。
         @{ Cmd = 'AT+PIN?';         Pat = '^\+PIN:"';        Mask = $true  },
         @{ Cmd = 'AT+UUID?';        Pat = '^\+UUID:"';       Mask = $false },
         @{ Cmd = 'AT+DEVNAME?';     Pat = '^\+DEVNAME:"';    Mask = $false },
@@ -371,6 +372,15 @@ try {
 
     $line = Ask -Command 'AT+NOSUCH?' -Pattern '^\+CME ERROR:1$'
     Check '不存在的参数名回 +CME ERROR:1' ($null -ne $line) $line
+
+    # 退役参数（2026-09-28）：广播名已并入 SN，`name` 这个名字对外不再存在。
+    # 读、写、测试三种形态都必须回 1（= 没有这个名字），而不是回一个可能与实际广播名
+    # 不一致的值。这条是为了防止「退役」被后来的改动悄悄推翻。
+    $line = Ask -Command 'AT+NAME?' -Pattern '^\+CME ERROR:1$'
+    Check '退役参数 AT+NAME? 回 +CME ERROR:1' ($null -ne $line) $line
+
+    $line = Ask -Command 'AT+NAME="x"' -Pattern '^\+CME ERROR:1$'
+    Check '退役参数 AT+NAME= 被拒（不会被写进 EEPROM）' ($null -ne $line) $line
 
     $line = Ask -Command 'AT+SN=' -Pattern '^(ERROR|\+CME ERROR:)'
     Check '空值回 ERROR / +CME ERROR' ($null -ne $line) $line

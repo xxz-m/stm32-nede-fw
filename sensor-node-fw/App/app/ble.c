@@ -202,11 +202,16 @@ void Ble_ctor(void) {
     * 影子内部地址，因此覆盖之后这里读到的就是介质里的值。
     * 顺序保证：装配点先调 Store_ctor()，本函数在其之后；而真正把配置写进模组的
     * 时刻被 `App_Store_ConfigResolved()` 门控（见 BLE_PROCESS_SIG 分支），
-    * 所以不会出现「拿默认值配了模组、随后又读到真值」的错配。 */
+    * 所以不会出现「拿默认值配了模组、随后又读到真值」的错配。
+    *
+    * NOTE (广播名 = SN，2026-09-28 用户确认)：`local_name` **不再**读退役的 `name` 槽位，
+    * 而是与 `serial_number` 同读 `SVC_PARAM_BLE_SN`——单一真相，两个值物理上不可能不一致。
+    * 历史坑：两者默认值恰好相同（都是 `VWA2608A0013`），改了一个不动另一个，现场表现为
+    * 「串口改了名字、手机看到的名字却没变」，且**没有任何报错**。 */
     me->config = (BleConfig){
         App_Store_Value(SVC_PARAM_BLE_SN),
         App_Store_Value(SVC_PARAM_BLE_PIN),
-        App_Store_Value(SVC_PARAM_BLE_NAME),
+        App_Store_Value(SVC_PARAM_BLE_SN),
         App_Store_Value(SVC_PARAM_BLE_UUID),
         App_Store_Value(SVC_PARAM_BLE_DEVNAME),
         App_Store_Value(SVC_PARAM_BLE_MODEL),

@@ -212,7 +212,7 @@ QState Node_state_Active(Node * const me, QEvt const * const e) {
             * docs_sensor/06-协议格式.md。 */
             BSP_printLine("at console ready (line-based AT, CR/LF terminated)");
             BSP_printLine("params : AT+SN? read | AT+SN=\"<v>\" write | AT+SN=? max len");
-            BSP_printLine("names  : SN NAME PIN UUID DEVNAME MODEL BATCH");
+            BSP_printLine("names  : SN PIN UUID DEVNAME MODEL BATCH (BLE adv name = SN)");
             BSP_printLine("biz    : AT+TRANSINTVL? read | AT+TRANSINTVL=<1..20> min (saved)");
             BSP_printLine("store  : AT+CMD? | AT+VER? | AT+CFG? status | AT&F defaults | AT+I2C? scan");
             BSP_printLine("system : AT+RST | AT+REBOOT (reply OK first, then reset)");

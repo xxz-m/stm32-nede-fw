@@ -44,7 +44,7 @@
 ```
 E:\stm32\sensor-node-fw\
 ├── AGENTS.md                        本文件：工作区约束入口
-├── docs_sensor\                     工程文档集（00-索引.md 为入口，01..12，含 08-改动日志）
+├── docs_sensor\                     工程文档集（00-索引.md 为入口，01..13，含 08-改动日志）
 ├── sensor-node-fw\                  ★ 主工程（STM32CubeMX + QP/C 6.9.1 QV）
 │   ├── sensor-node-fw.ioc           CubeMX 配置（时钟/外设/NVIC/时基）
 │   ├── Core\                        CubeMX 生成（启动、中断、HAL 时基、外设初始化）

@@ -157,6 +157,19 @@ static bool formatText(char *out, size_t capacity, char const *text) {
     return true;
 }
 
+/** @brief 取下一个字段的分隔符：刚开完 `{` 时**不要**逗号。
+ *
+ *  NOTE (为什么需要它，2026-09-29 上板实测踩到)：下面三个 `append*` 原来把逗号写死在格式串里
+ *    （`",\"%s\":%s"`）。旧报文外壳是 `{"cmd":"data","seq":12`（结尾没有逗号），所以第一个
+ *    字段接上逗号正好合法；2026-09-29 把外壳换成 `{"deviceId":"…","properties":{` 之后，
+ *    第一个字段就拼成了 `{,"temperature":…` —— **非法 JSON**，平台解析不出属性，
+ *    页面一直「暂无属性上报」，而设备侧日志看起来完全正常（这正是最难查的一类）。
+ *  NOTE (为什么按缓冲区判、而不是加 `first` 参数)：这样「加一个字段」不需要任何额外记账，
+ *    也不可能漏；值只可能是数字或十六进制文本（不会以 `{` 结尾），误判不存在。 */
+static char const *fieldSeparator(char const *buffer, size_t used) {
+    return ((used > 0U) && (buffer[used - 1U] == '{')) ? "" : ",";
+}
+
 /** @brief 追加 ",\"name\":<整数值>". */
 static bool appendInteger(char *buffer, size_t capacity, size_t *used,
                           char const *name, int32_t value) {
@@ -167,7 +180,8 @@ static bool appendInteger(char *buffer, size_t capacity, size_t *used,
     if (!formatInteger(text, sizeof(text), value)) {
         return false;
     }
-    length = snprintf(part, sizeof(part), ",\"%s\":%s", name, text);
+    length = snprintf(part, sizeof(part), "%s\"%s\":%s",
+                      fieldSeparator(buffer, *used), name, text);
     if ((length < 0) || ((size_t)length >= sizeof(part))) {
         return false;
     }
@@ -184,7 +198,8 @@ static bool appendDecimal(char *buffer, size_t capacity, size_t *used,
     if (!formatDecimal(text, sizeof(text), value, decimals)) {
         return false;
     }
-    length = snprintf(part, sizeof(part), ",\"%s\":%s", name, text);
+    length = snprintf(part, sizeof(part), "%s\"%s\":%s",
+                      fieldSeparator(buffer, *used), name, text);
     if ((length < 0) || ((size_t)length >= sizeof(part))) {
         return false;
     }
@@ -233,7 +248,8 @@ static bool appendJsonEscaped(char *buffer, size_t capacity, size_t *used,
 static bool appendText(char *buffer, size_t capacity, size_t *used,
                        char const *name, char const *text) {
     char part[96];
-    int length = snprintf(part, sizeof(part), ",\"%s\":\"%s\"", name, text);
+    int length = snprintf(part, sizeof(part), "%s\"%s\":\"%s\"",
+                          fieldSeparator(buffer, *used), name, text);
     if ((length < 0) || ((size_t)length >= sizeof(part))) {
         return false;
     }
@@ -1249,7 +1265,20 @@ static bool buildReport(ModemComponent *me) {
         }
     }
     /* 收尾两个 `}`：先关 `properties`，再关根对象 */
-    return append(me->payload, sizeof(me->payload), &used, "}}");
+    if (!append(me->payload, sizeof(me->payload), &used, "}}")) {
+        return false;
+    }
+    /* NOTE (出网前的最后一道自检，2026-09-29 加)：`{,"` = 开括号后紧跟逗号，是**非法 JSON**
+     *   的典型形态。实测踩过一次（`append*` 把逗号写死在格式串里，外壳改成 `…"properties":{`
+     *   之后第一个字段就成了 `{,"temperature"…`）：平台解析不了、页面「暂无属性上报」，
+     *   而设备侧日志看起来一切正常——属于最难查的一类。
+     *   与其把一条平台读不懂的报文发出去让现场猜「是没发还是没收到」，不如**不发**并留日志。
+     *   值只可能是数字或十六进制文本（不含 `{`），所以这里不会误判。 */
+    if (strstr(me->payload, "{,") != (char const *)0) {
+        MODEM_TRACE(me, "report has malformed JSON separator; dropped");
+        return false;
+    }
+    return true;
 }
 
 /*--------------------------------------------------------------- 读写属性 */

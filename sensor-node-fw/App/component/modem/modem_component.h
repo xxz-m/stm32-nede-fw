@@ -176,7 +176,10 @@ typedef struct {
     bool report_requested;
     bool cell_requested;
     bool location_requested;
-    uint32_t sequence;
+    /* NOTE (2026-09-29 删掉 `sequence`)：它原来只服务于报文里的 `"seq":N`，而平台定的
+     * 报文形状是 `{"deviceId":…,"properties":{…}}`（没有 seq 这个键）。留一个只增不读的
+     * 计数没有意义，要查丢包应当走平台已定义的属性标识符（见 `modem_component.c` 的
+     * `MODEM_PROP_*` 注释），而不是往报文里塞自研字段。 */
     uint32_t report_period_ms;
     uint32_t cell_period_ms;
     /* --- 在线期上行的容错（2026-09-20 新增） --- */

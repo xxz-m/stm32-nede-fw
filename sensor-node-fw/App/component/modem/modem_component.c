@@ -1172,78 +1172,114 @@ static void connectLoop(ModemComponent *me, uint32_t now) {
 }
 
 /*--------------------------------------------------------------- 上报报文 */
-/** @brief 用采样数据组装 data 报文；返回 false 表示报文放不下。 */
+/*! 上报/读写用到的**属性标识符**：平台物模型确认后，**只改这一块**。 ------------
+ *
+ *  NOTE (为什么集中定义，2026-09-29)：同一套名字在**两处**被用到——`buildReport()`
+ *    （周期上报 `properties` 里的 key）与 `formatReadField()` / `buildSetReply()`
+ *    （`properties/read|write` 的字段名）。抄成两份必然改漏一处（与 `#75`/`#76` 同类问题）。
+ *
+ *  NOTE (平台给的口径，2026-09-29)：平台方给的样例是
+ *    `{"deviceId":"<设备ID>","properties":{"frequencyModulus":4795.6,"temperature":24.1,"stress":-35.8}}`
+ *    —— 外层**只有** `deviceId` 与 `properties` 两个键，属性名由**它们的物模型**定。
+ *    本设备当前上报的量（温度/湿度/信号/小区）与那个样例里的振弦量（频率模数/应力）
+ *    **不是同一套物模型**，所以除 `temperature` 外的名字都还是**待平台确认**的占位值。 */
+#define MODEM_PROP_TEMPERATURE   "temperature"
+#define MODEM_PROP_HUMIDITY      "humidity"
+#define MODEM_PROP_SIGNAL        "signal_quality"
+#define MODEM_PROP_CELL_TAC      "cell_tac"
+#define MODEM_PROP_CELL_ID       "cell_id"
+#define MODEM_PROP_LOC_LON       "location_lon"
+#define MODEM_PROP_LOC_LAT       "location_lat"
+
+/** @brief 组装上报报文：形状由平台定（`{"deviceId":"…","properties":{…}}`）。
+ *  @return false = 报文放不下或身份不可用（**整条不发**，绝不发半条 JSON）。 */
 static bool buildReport(ModemComponent *me) {
     size_t used;
-    int produced = snprintf(me->payload, sizeof(me->payload),
-                            "{\"cmd\":\"data\",\"seq\":%lu",
-                            (unsigned long)me->sequence);
+    int produced;
+
+    /* NOTE (为什么 deviceId 不需要 JSON 转义)：它的取值受 `SVC_Param_CheckDeviceId()`
+     *   约束（`[A-Za-z0-9-_.]`、非空、不是出厂默认值），不可能含 `"` 或 `\`。
+     *   这里的空判是第二道闸：空 deviceId 拼出来的报文平台无法归属，直接不发。
+     * NOTE (为什么不再有 `cmd`/`seq`)：那是自研协议，平台解析不出属性——旧报文在平台
+     *   属性页的症状是「暂无属性上报」；`seq` 是给现场查丢包用的，平台格式里没有这个键，
+     *   因此**不能**为了好查而留在报文里（多一个键就可能被严格解析器整条丢掉）。 */
+    if ((me->config->device_id == (char const *)0) ||
+        (me->config->device_id[0] == '\0')) {
+        return false;
+    }
+    produced = snprintf(me->payload, sizeof(me->payload),
+                        "{\"deviceId\":\"%s\",\"properties\":{",
+                        me->config->device_id);
 
     if ((produced < 0) || ((size_t)produced >= sizeof(me->payload))) {
         return false;
     }
     used = (size_t)produced;
-    if (!appendDecimal(me->payload, sizeof(me->payload), &used, "temperature",
-                       me->data.temperature_cC, 2U)) {
+    if (!appendDecimal(me->payload, sizeof(me->payload), &used,
+                       MODEM_PROP_TEMPERATURE, me->data.temperature_cC, 2U)) {
         return false;
     }
-    if (!appendDecimal(me->payload, sizeof(me->payload), &used, "humidity",
-                       (int32_t)me->data.humidity_permil, 1U)) {
+    if (!appendDecimal(me->payload, sizeof(me->payload), &used,
+                       MODEM_PROP_HUMIDITY, (int32_t)me->data.humidity_permil, 1U)) {
         return false;
     }
-    if (!appendInteger(me->payload, sizeof(me->payload), &used, "signal_quality",
-                       me->data.signal_quality)) {
+    if (!appendInteger(me->payload, sizeof(me->payload), &used,
+                       MODEM_PROP_SIGNAL, me->data.signal_quality)) {
         return false;
     }
     /* 取不到的字段整条跳过：宁可报文里没有这个键，也不要报一个假值。 */
     if ((me->data.tac[0] != '\0') &&
-        (!appendText(me->payload, sizeof(me->payload), &used, "cell_tac",
-                     me->data.tac))) {
+        (!appendText(me->payload, sizeof(me->payload), &used,
+                     MODEM_PROP_CELL_TAC, me->data.tac))) {
         return false;
     }
     if ((me->data.cell_id[0] != '\0') &&
-        (!appendText(me->payload, sizeof(me->payload), &used, "cell_id",
-                     me->data.cell_id))) {
+        (!appendText(me->payload, sizeof(me->payload), &used,
+                     MODEM_PROP_CELL_ID, me->data.cell_id))) {
         return false;
     }
     if (me->data.location_valid) {
-        if (!appendDecimal(me->payload, sizeof(me->payload), &used, "location_lon",
-                           me->data.lon_e6, 6U)) {
+        if (!appendDecimal(me->payload, sizeof(me->payload), &used,
+                           MODEM_PROP_LOC_LON, me->data.lon_e6, 6U)) {
             return false;
         }
-        if (!appendDecimal(me->payload, sizeof(me->payload), &used, "location_lat",
-                           me->data.lat_e6, 6U)) {
+        if (!appendDecimal(me->payload, sizeof(me->payload), &used,
+                           MODEM_PROP_LOC_LAT, me->data.lat_e6, 6U)) {
             return false;
         }
     }
-    return append(me->payload, sizeof(me->payload), &used, "}");
+    /* 收尾两个 `}`：先关 `properties`，再关根对象 */
+    return append(me->payload, sizeof(me->payload), &used, "}}");
 }
 
 /*--------------------------------------------------------------- 读写属性 */
-/** @brief 按字段名格式化当前值；未知字段返回 false。 */
+/** @brief 按字段名格式化当前值；未知字段返回 false。
+*
+* NOTE (字段名用 `MODEM_PROP_*` 宏，2026-09-29)：这些名字与周期上报 `properties` 里的 key
+*   是**同一套平台标识符**，定义在上面那一块里——改名时只改那里，别在这里写回字面量。 */
 static bool formatReadField(ModemComponent *me, char const *name,
                             char *out, size_t capacity) {
-    if (strcmp(name, "temperature") == 0) {
+    if (strcmp(name, MODEM_PROP_TEMPERATURE) == 0) {
         return formatDecimal(out, capacity, me->data.temperature_cC, 2U);
     }
-    if (strcmp(name, "humidity") == 0) {
+    if (strcmp(name, MODEM_PROP_HUMIDITY) == 0) {
         return formatDecimal(out, capacity, (int32_t)me->data.humidity_permil, 1U);
     }
-    if (strcmp(name, "signal_quality") == 0) {
+    if (strcmp(name, MODEM_PROP_SIGNAL) == 0) {
         return formatInteger(out, capacity, me->data.signal_quality);
     }
-    if (strcmp(name, "cell_tac") == 0) {
+    if (strcmp(name, MODEM_PROP_CELL_TAC) == 0) {
         return (me->data.tac[0] != '\0') && formatText(out, capacity, me->data.tac);
     }
-    if (strcmp(name, "cell_id") == 0) {
+    if (strcmp(name, MODEM_PROP_CELL_ID) == 0) {
         return (me->data.cell_id[0] != '\0') &&
                formatText(out, capacity, me->data.cell_id);
     }
-    if (strcmp(name, "location_lon") == 0) {
+    if (strcmp(name, MODEM_PROP_LOC_LON) == 0) {
         return me->data.location_valid &&
                formatDecimal(out, capacity, me->data.lon_e6, 6U);
     }
-    if (strcmp(name, "location_lat") == 0) {
+    if (strcmp(name, MODEM_PROP_LOC_LAT) == 0) {
         return me->data.location_valid &&
                formatDecimal(out, capacity, me->data.lat_e6, 6U);
     }
@@ -1623,7 +1659,6 @@ static void finishRuntime(ModemComponent *me, ModemAtResult result) {
             me->reply_pending = false;
             break;
         case MODEM_RUNTIME_REPORT:
-            ++me->sequence;
             me->report_requested = false;
             break;
         case MODEM_RUNTIME_CELL:
@@ -1752,7 +1787,6 @@ void Modem_Component_Start(ModemComponent *me) {
     me->recover_phase = 0U;
     me->failure = MODEM_FAILURE_NONE;
     me->failure_step = 0U;
-    me->sequence = 0U;
     me->state = MODEM_COMPONENT_PROBING;
     tracePlanStart(me);
     startPlanStep(me, nowMs(me));

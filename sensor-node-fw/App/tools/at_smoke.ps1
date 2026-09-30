@@ -5,7 +5,7 @@
  用途：
    连上调试串口（USART1，115200 8N1），按固定顺序把 AT 命令发一遍，检查
    启动横幅、每条响应，以及**参数是否真的落了盘**。默认全程只读，
-   只有显式给出 -WriteTest / -WriteSn 才会写 EEPROM。
+   只有显式给出 -WriteTest / -WriteSn 才会写介质（当前为 SPI NOR）。
 
  命令形态（标准 AT，见 App/service/svc_at.h 与 docs_sensor/06-协议格式.md）：
    AT                      握手                      -> OK
@@ -289,20 +289,26 @@ try {
                 Check ('BLE 实际生效波特率（' + $bleBaud + '）') ($bleBaud -eq '115200') $bleLine
             }
 
-            if ($joined -match 'store:\s*eeprom at 0x50 ready') {
-                Check 'EEPROM 应答（eeprom at 0x50 ready）' $true ''
+            if ($joined -match 'store:\s*loaded ver=\d+ seq=\d+ gen=\d+') {
+                Check 'NOR 已装载（store: loaded … → 读的是介质上的有效记录）' $true ''
             }
-            elseif ($joined -match 'store:\s*no eeprom') {
-                Check 'EEPROM 应答（eeprom at 0x50 ready）' $false '报的是 no eeprom：查 PB6/PB7 接线与上拉、A1/A2 接法'
+            elseif ($joined -match 'store:\s*blank flash, using built-in defaults') {
+                Check 'NOR 探测成功（store: blank flash → 用编译期默认值；空白芯片首启的正常现象）' $true ''
+            }
+            elseif ($joined -match 'store:\s*flash load failed \((\d+)\)') {
+                Check 'NOR 探测 / 读取' $false 'flash load failed：查 PA5/PA6/PA7/PA8 接线与片选，以及 /WP(pin3)、/HOLD(pin7) 是否拉到 3.3 V'
+            }
+            elseif ($joined -match 'store:\s*invalid partition layout') {
+                Check 'NOR 分区布局' $false 'invalid partition layout：app_config.h 的分区宏与芯片容量/擦除粒度不符'
             }
             else {
-                Warn '横幅里没有 store: 的探测结果行'
+                Warn '横幅里没有 store: 的装载结果行（APP_CFG_STORE_ENABLE=0 时属正常）'
             }
         }
     }
 
     # ---------------------------------------------------- 2) 只读命令
-    Section '2) 只读命令（不碰 EEPROM）'
+    Section '2) 只读命令（不写介质）'
     # Mask = 该响应含凭据，只校验格式、不打印值（AGENTS.md 4.2 凭据纪律）
     $reads = @(
         @{ Cmd = 'AT';              Pat = '^OK$';            Mask = $false },
@@ -359,7 +365,7 @@ try {
     Check 'AT+TRANSINTVL=? 报告范围' ($null -ne $line) $line
 
     # 越界必须被拒且**不改动当前值**。写 0 一定在合法范围 1~20 之外，
-    # 所以这一段即使在默认的只读模式下也是安全的（不会触发 EEPROM 写入）。
+    # 所以这一段即使在默认的只读模式下也是安全的（不会触发介质写入）。
     $before = Ask -Command 'AT+TRANSINTVL?' -Pattern '^\+TRANSINTVL:\d'
     $line = Ask -Command 'AT+TRANSINTVL=0' -Pattern '^\+CME ERROR:2$'
     Check 'AT+TRANSINTVL=0 被拒（+CME ERROR:2）' ($null -ne $line) $line
@@ -380,7 +386,7 @@ try {
     Check '退役参数 AT+NAME? 回 +CME ERROR:1' ($null -ne $line) $line
 
     $line = Ask -Command 'AT+NAME="x"' -Pattern '^\+CME ERROR:1$'
-    Check '退役参数 AT+NAME= 被拒（不会被写进 EEPROM）' ($null -ne $line) $line
+    Check '退役参数 AT+NAME= 被拒（不会被写进介质）' ($null -ne $line) $line
 
     $line = Ask -Command 'AT+SN=' -Pattern '^(ERROR|\+CME ERROR:)'
     Check '空值回 ERROR / +CME ERROR' ($null -ne $line) $line
@@ -404,12 +410,20 @@ try {
     }
     Check '扫描收尾（+I2C:END）' ($null -ne $endLine) $endLine
     $addrs = ($scan -join ' ')
-    Check ('扫描发现 EEPROM 0x50（共 ' + $scan.Count + ' 个：' + $addrs + '）') `
-          ($scan -contains '+I2C:50') $addrs
+    # NOTE (2026-09-30 换介质)：这一段只是 I2C **总线诊断**，与参数介质无关（参数已存在 SPI NOR 上）。
+    #   板上是否还装 AT24C04 未定，因此**不再硬判 0x50**（硬判会把"本来就没装"误报成 FAIL），
+    #   只把扫到的地址列出来供人判读。
+    Write-Host ('   I2C 扫描结果（' + $scan.Count + ' 个）：' + $addrs) -ForegroundColor DarkGray
+    if ($scan -contains '+I2C:50') {
+        Check 'I2C 上仍能看到 AT24C04（0x50）' $true $addrs
+    }
+    else {
+        Warn 'I2C 上没有 0x50：本板若已不装 AT24C04（参数改存 SPI NOR）属正常；若预期它仍在，查 PB6/PB7 与上拉电阻'
+    }
 
     # ---------------------------------------------------- 4) 写入测试
     if ($WriteTest -or -not [string]::IsNullOrWhiteSpace($WriteSn)) {
-        Section '4) 写入测试（会动 EEPROM）'
+        Section '4) 写入测试（会写介质）'
 
         $orig = ''
         $cur = Ask -Command 'AT+SN?' -Pattern '^\+SN:"'
@@ -430,10 +444,15 @@ try {
             $line = Ask -Command $cmd -Pattern '^OK$'
             Check ($cmd + ' 被受理（回 OK）') ($null -ne $line) $line
             if (($null -eq $line) -and [string]::IsNullOrWhiteSpace($WriteSn)) {
-                # -WriteTest 是把"当前值"再写一遍。当前值若不是合法设备号（未刷 SN，
-                # 或含 `/` `+` `#` 空格等非法字符），固件会回 +CME ERROR:2 拒写。
-                Warn '当前 SN 不是合法设备号（未刷或含非法字符）→ -WriteTest 被拒；请用 -WriteSn <合法设备号> 刷一个'
+                # -WriteTest 是把"当前值"再写一遍。当前值被拒有两种原因（固件都回 +CME ERROR:2）：
+                #   ① 含 `/` `+` `#` 空格等非法字符；② **等于出厂默认值** APP_CFG_BLE_SN
+                #      （空白板上未刷 SN 时必然命中 ②：判据是"产线还没刷"，见 svc_param.c）。
+                Warn '当前 SN 被拒（含非法字符，或等于出厂默认值）→ -WriteTest 无法验证写入；空白板请用 -WriteSn <与默认值不同的合法设备号>'
             }
+
+            # NOTE (空白板上只用 -WriteTest 验不出写入)：读得到 ≠ 写得进。若当前值就是出厂默认值，
+            #   固件会在判据处直接拒写，此时**必须**用 -WriteSn 指定一个新值才能真正走完
+            #   「编码 → 擦除 → 编程 → 回读校验」这条路，才能验到存储的第三层（见 06-协议格式 判读要点）。
 
             # 回读必须抢在重启前面：`AT+SN?` 读的是内存影子，写完立即是新值，
             # 而复位最早也在 APP_CFG_SYSTEM_REBOOT_MIN_DELAY_MS（500 ms）之后。
@@ -496,7 +515,7 @@ Write-Host '人工必做的一步：断电保持' -ForegroundColor Cyan
 Write-Host '  1) 若刚做过写入测试，先确认上面出现了 store: saved；'
 Write-Host '  2) 拔掉板子电源等 3 秒再上电；'
 Write-Host '  3) 重跑一次本脚本（不加 -WriteTest）：AT+SN? 应等于刚才写入的值，'
-Write-Host '     且 AT+CFG? 的 loaded 字段=1、ver 不回退（说明读的是 EEPROM、不是默认值）。'
+Write-Host '     且 AT+CFG? 的 loaded 字段=1、ver 不回退（说明读的是介质上的记录、不是默认值）。'
 Write-Host '  4) 要恢复出厂默认值：发 AT&F（**注意**：当前 AT&F 会把 SN 一起打回编译期默认值，'
 Write-Host '     产线上慎用；SN 的写权限与"改完自动重启"见 docs_sensor/06-协议格式.md）'
 

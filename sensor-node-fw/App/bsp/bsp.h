@@ -48,6 +48,7 @@ typedef enum {
 #include "bsp_modem_uart.h"
 /* I2C 子模块。NOTE (顺序)：必须放在 bsp_status_t 定义之后（bsp_i2c.h 会用到它）。 */
 #include "bsp_i2c.h"
+#include "bsp_spi.h"
 
 /* 初始化 -------------------------------------------------------------------*/
 

@@ -264,9 +264,10 @@ static mn316ApnResult mn316ReadActiveApn(char const *text, char *out, size_t cap
 *   ——APN 取到了，但网关取不到。这可能是真的没有网关，也可能是**模组把网关给成了不带引号
 *   的字段**（3GPP 规定是带引号的字符串，但实现有差异），而本函数只认引号字段。这个区别
 *   直接决定结论，所以把 `+CGCONTRDP:` 那一行**原样**打出来，不再靠猜。
-* @param marker 起点标记（例如 `"+CGCONTRDP:"`）；传 NULL 表示从头开始 */
-static void mn316FormatRaw(char const *text, char const *marker, char *out, size_t capacity) {
-    static char const prefix[] = "pdp raw=\"";
+* @param marker 起点标记（例如 `"+CGCONTRDP:"`）；传 NULL 表示从头开始
+ * @param label 日志前缀标签（如 `"pdp"` / `"cfun"` / `"cops"`），用作 `<label> raw="..."` */
+static void mn316FormatRaw(char const *text, char const *marker, char const *label,
+                           char *out, size_t capacity) {
     char const *start = text;
     size_t used = 0U;
     size_t index = 0U;
@@ -280,9 +281,18 @@ static void mn316FormatRaw(char const *text, char const *marker, char *out, size
             start = found;
         }
     }
-    while ((prefix[used] != '\0') && ((used + 1U) < capacity)) {
-        out[used] = prefix[used];
-        ++used;
+    /* NOTE (2026-09-30 参数化)：前缀原先是写死的 `pdp raw="`，只有 APN 诊断用得上。
+     *   现在 `AT+CFUN?` / `AT+COPS?` 也要原样打应答，写死的前缀会把它们统统标成
+     *   `pdp`（误导排查）。改成由调用方给标签，格式统一为 `<label> raw="..."`。
+     *   用 snprintf 是为了让"标签过长导致截断"变成可控的空串，而不是越界。 */
+    {
+        int const written = snprintf(out, capacity, "%s raw=\"", label);
+
+        if ((written < 0) || ((size_t)written >= capacity)) {
+            out[0] = '\0';
+            return;
+        }
+        used = (size_t)written;
     }
     /* NOTE (长度预算)：App 侧日志的格式化缓冲是 APP_CFG_LOG_FMT_BUF_SIZE（96），
      * 前缀 "4g-core: " 占 9，所以正文控制在 64 字符以内，避免被截断在半路上。 */
@@ -514,6 +524,26 @@ static bool mn316Apply(ModemComponent *me, uint8_t step) {
     int32_t value = 0;
 
     switch (kMn316Plan[step].op) {
+        case MODEM_OP_RADIO:
+            /* NOTE (2026-09-30 加)：本步 `AT+CFUN?` 的应答原先落到 default 被**丢弃**，
+             *   于是「射频到底是开是关」在日志里完全看不到。而卡在第 11 步
+             *   `+CEREG:2,0,,,`（*未注册且不搜网*）时，这正是第一个要排除的原因：
+             *   固件自己的 recover 会**先发 `AT+CFUN=0`**（见 mn316Recover 的 NOTE），
+             *   若随后的 `AT+CFUN=1` 被模组忽略（那条 NOTE 自己承认「常被忽略」），
+             *   射频就会一直留在关闭态 —— 此后每一次连接都表现为 stat=0。
+             *   打出来一次即可分开：`+CFUN: 1` 排除本原因，`+CFUN: 0` 就是它。 */
+            mn316FormatRaw(me->response, "+CFUN:", "cfun", line, sizeof(line));
+            MODEM_TRACE(me, line);
+            return true;
+        case MODEM_OP_OPERATOR:
+            /* NOTE (2026-09-30 加)：同理，`AT+COPS?` 的应答原先也被丢弃。
+             *   判读：`+COPS: 0,2,"46000",9` = 模组**看得到运营商**，问题在注册被拒
+             *   （卡侧：未激活 / 欠费 / 停机 / NB 卡机卡绑定）；`+COPS: 0`（没有运营商字段）
+             *   = 它连运营商都没搜到，更可能是覆盖 / 频段 / 天线。
+             *   与 CFUN 一起看，就能把「射频关了」「搜不到网」「被网拒绝」三分开。 */
+            mn316FormatRaw(me->response, "+COPS:", "cops", line, sizeof(line));
+            MODEM_TRACE(me, line);
+            return true;
         case MODEM_OP_SIGNAL:
             cursor = afterMarker(me->response, "+CSQ:");
             if ((cursor != (char const *)0) && ModemAt_NextInt(&cursor, &value)) {
@@ -570,16 +600,16 @@ static bool mn316Apply(ModemComponent *me, uint8_t step) {
                      *   而解析器只认引号字段」在日志上完全同形，而这两种情况的结论
                      *   天差地别（前者=没有公网路由，后者=解析器的问题）。
                      *   把 `+CGCONTRDP:` 那一行原样打出来，这个歧义就没了。 */
-                    mn316FormatRaw(me->response, "+CGCONTRDP:", line, sizeof(line));
+                    mn316FormatRaw(me->response, "+CGCONTRDP:", "pdp", line, sizeof(line));
                     MODEM_TRACE(me, line);
                 } else if (result == MN316_APN_EMPTY) {
                     (void)snprintf(line, sizeof(line),
                                    "pdp apn EMPTY (active context has blank APN)");
                     MODEM_TRACE(me, line);
-                    mn316FormatRaw(me->response, "+CGCONTRDP:", line, sizeof(line));
+                    mn316FormatRaw(me->response, "+CGCONTRDP:", "pdp", line, sizeof(line));
                     MODEM_TRACE(me, line);
                 } else {
-                    mn316FormatRaw(me->response, "+CGCONTRDP:", line, sizeof(line));
+                    mn316FormatRaw(me->response, "+CGCONTRDP:", "pdp", line, sizeof(line));
                     MODEM_TRACE(me, line);
                 }
             }

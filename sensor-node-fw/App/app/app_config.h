@@ -63,19 +63,41 @@
 *  原来的 24 会直接丢弃整行，表现为「指令毫无反应」。 */
 #define APP_CFG_AT_LINE_MAX         (64U)
 
-/* 参数存储（I2C EEPROM） ---------------------------------------------------*/
-/*! 1 = 启用掉电参数存储（I2C EEPROM + AT24C04 驱动 + AO_Store）；
-*  0 = 整体关闭总线访问，参数退化为「只有编译期默认值」（影子仍在，各层调用点不变）。
-*
-*  ⚠️ NOTE (2026-09-29 **临时测试配置**，发版前必须改回 1)：新板到手要先测业务功能、
-*   存储芯片还没上，因此关掉它。关掉后的可预期行为：
-*     - 不碰 I2C 总线；`AT+CFG?` 会显示未就绪/无介质，启动横幅的 `store:` 行也会说明；
-*     - 参数**改得动但存不住**：`AT+SN=` / `AT+TRANSINTVL=` 都只改 RAM，**重启回默认值**；
-*     - `AT&F` 无意义（本来就在默认值上）；
-*     - **`SN` 的“出厂默认值”判据会被编译掉**（见 `SVC_Param_CheckDeviceId()` 的 `#if`），
-*       所以下面 `APP_CFG_BLE_SN` 填什么就能上什么 —— 这正是这种构建能测 4G 的前提。
-*   回滚：把本宏改回 `(1U)` 并同步恢复 `APP_CFG_BLE_SN` 的出厂值（见该宏的 NOTE）。 */
-#define APP_CFG_STORE_ENABLE            (0U)
+/* 共享 SPI1 与 W25Q32JV（PA5=SCK、PA6=MISO、PA7=MOSI、PA8=Flash CS） --------*/
+/* NOTE (共享)：SPI1 的 DMA1 通道 2/3 只归 BSP 总线管理；传感器片选待确认，不猜引脚。
+ * 每个设备可以独立配置 mode/divider；基线 mode0、APB2/8=9 MHz 同步登记在 .ioc。 */
+#define APP_CFG_SPI_TRANSFER_MAX         (260U)
+#define APP_CFG_SPI_TRANSFER_TIMEOUT_MS  (100U)
+#define APP_CFG_FLASH_CS_PIN             (8U)
+#define APP_CFG_FLASH_SPI_MODE           (0U)
+#define APP_CFG_FLASH_SPI_DIVIDER        (8U)
+#define APP_CFG_FLASH_CAPACITY           (0x400000UL)
+#define APP_CFG_FLASH_PAGE_SIZE          (256U)
+#define APP_CFG_FLASH_SECTOR_SIZE        (4096UL)
+/* 手册页编程 max 3 ms、4 KiB 擦除 max 400 ms；给调度和共享总线留余量。 */
+#define APP_CFG_FLASH_PROGRAM_TIMEOUT_MS (100U)
+#define APP_CFG_FLASH_ERASE_TIMEOUT_MS   (1000U)
+#define APP_CFG_FLASH_JOB_TIMEOUT_MS     (600000UL)
+/* 三分区地址均为 Flash 相对偏移；APP 只预留，服务接口拒绝擦写。 */
+#define APP_CFG_STORAGE_CONFIG_BASE      (0x000000UL)
+#define APP_CFG_STORAGE_CONFIG_SIZE      (0x010000UL)
+#define APP_CFG_STORAGE_DATA_BASE        (0x010000UL)
+#define APP_CFG_STORAGE_DATA_SIZE        (0x370000UL)
+#define APP_CFG_STORAGE_APP_BASE         (0x380000UL)
+#define APP_CFG_STORAGE_APP_SIZE         (0x080000UL)
+/* 本轮配置快照占前 32 KiB；其余为身份独立区/上传检查点留空间，暂不写入。 */
+#define APP_CFG_CONFIG_JOURNAL_OFFSET     (0x0000UL)
+#define APP_CFG_CONFIG_JOURNAL_SIZE       (0x8000UL)
+#define APP_CFG_CONFIG_IDENTITY_OFFSET    (0x8000UL)
+#define APP_CFG_CONFIG_IDENTITY_SIZE      (0x4000UL)
+#define APP_CFG_CONFIG_CHECKPOINT_OFFSET  (0xC000UL)
+#define APP_CFG_CONFIG_CHECKPOINT_SIZE    (0x4000UL)
+
+/* 参数存储（W25Q32JV；保留旧 EEPROM 驱动的配置，当前不接入它） -------------*/
+/* 1=启用 W25Q32 配置日志；0=只保留默认值与 RAM 影子，不进行 Flash 作业。
+ * NOTE (2026-09-30)：按用户确认改用 W25Q32，恢复存储开关；默认 SN 保持现值。
+ * 开启存储后，默认 SN 是未配置哨兵，需串口写入实际设备 SN 才允许 4G 上线。 */
+#define APP_CFG_STORE_ENABLE            (1U)
 /*! I2C 从机 7 位地址。AT24C04 的 A1/A2 全部接地时为 0x50（用户 2026-09-27 确认）。
 *  换接线只改这一行；地址不确定时用调试口的 `AT+I2C?` 扫描确认。 */
 #define APP_CFG_STORE_I2C_ADDR          (0x50U)
@@ -102,6 +124,8 @@
 /*! I2C 扫描的地址范围（7 位地址，含端点）。 */
 #define APP_CFG_STORE_SCAN_FIRST        (0x08U)
 #define APP_CFG_STORE_SCAN_LAST         (0x77U)
+#define APP_CFG_STORE_SCAN_BURST        (4U)
+#define APP_CFG_STORE_SCAN_URC_MAX      (8U)
 
 /* 心跳任务 -----------------------------------------------------------------*/
 #define APP_CFG_HEARTBEAT_ENABLE    (1)
@@ -183,18 +207,20 @@
 
 /*! 产品身份与小程序配置；通用组件内不得写死这些值。
 *
-*  ⚠️ NOTE (2026-09-29 **临时测试值**，发版前必须改回 `"VWA2608A0013"`)：
-*   当前填的是**平台那台设备的 deviceId**，配合上面 `APP_CFG_STORE_ENABLE = 0` 使用 ——
-*   存储关掉后 `SN` 只能是编译期默认值，而 `SN` 就是 MQTT 主题里的 `deviceId`，
-*   所以想连上平台就必须把它写死成平台认的那个串。
-*   另：存储关闭时 `SVC_Param_CheckDeviceId()` 不再把"等于本默认值"判成"产线没刷"
-*   （那条判据被 `#if` 编译掉），否则这个构建的 4G 会永远起不来。
+*  NOTE (2026-09-30 改回出厂哨兵)：参数存储恢复启用后，本宏的语义回到**出厂默认值哨兵**，
+*   而不再是"平台那台设备的 deviceId"。等于本宏的 SN 被视为"产线还没刷"：
+*   `SVC_Param_CheckDeviceId()` 返回 `SVC_DEVICE_ID_DEFAULT`（=2），4G 拒绝上线。
+*   真实设备 SN 由产线/现场用 `AT+SN="<device-id>"` 写入，经 AO_Store 落到 W25Q32，
+*   掉电重启后从 Flash 读回（存储关闭时是做不到的，所以当时才把这里写死成平台 deviceId）。
+*   ⚠️ 由此得一条现场纪律：**写入的值不能等于本宏**，否则判成"产线没刷"而拒写。
+*   实测踩坑记录：`cmd: sn rejected reason=2 pos=0 ch=0x73 len=10` —— 当时本宏还是
+*   `"sftest0004"`，而想写的值恰好也是 `sftest0004`，于是被判成默认值。
 *
 *  NOTE (2026-09-28 删掉 `APP_CFG_BLE_NAME`)：产品决定**蓝牙广播名就是 SN**，于是宏与
 *   参数槽位都不再需要「独立的广播名」（见 svc_param.h 的退役槽位 NOTE）。原来的
 *   `APP_CFG_BLE_NAME` 与 `APP_CFG_BLE_SN` 默认值恰好相同，留着它反而会被误认为
 *   「改这个宏就能改广播名」，而实际广播名取 `SVC_PARAM_BLE_SN`。 */
-#define APP_CFG_BLE_SN                        "sftest0004"
+#define APP_CFG_BLE_SN                        "VWA2608A0013"
 #define APP_CFG_BLE_PIN                       "062500"
 #define APP_CFG_BLE_SERVICE_UUID              "CDAB0000-1234-5678-1234-56789ABCDEF0"
 #define APP_CFG_BLE_DEVICE_NAME               "VWA-0013"

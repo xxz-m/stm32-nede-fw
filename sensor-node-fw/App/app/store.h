@@ -1,29 +1,10 @@
 ﻿/*============================================================================
-* store.h —— 应用层：AO_Store（掉电参数存储 + 调试口参数读写）
-*
-* 层次定位：**App(应用层)** → Service → Driver → BSP → HAL/CMSIS
-*           本文件只暴露「应用怎么用存储」，不暴露任何 HAL / I2C 细节。
-*
-* 职责：
-*   1. 持有参数集合的 **RAM 影子**（`SvcParam`），它是运行期的唯一真相
-*   2. 上电异步把介质里的有效记录读进影子（A/B 双槽取最新、校验 CRC）；
-*      介质空白或损坏时回落到 app_config.h 的编译期默认值
-*   3. 把运行期的修改异步落盘（交替写另一个槽 + 回读校验），全程不阻塞调用者
-*   4. 向其它 AO 提供只读访问（`App_Store_Value()`）与「配置是否已就绪」
-*      （`App_Store_ConfigResolved()`，供 AO_Ble 在探测模组前等一次）
-*
-* 为什么单独一个 AO（而不是塞进 AO_Node / AO_Ble）：
-*   - 存储与「谁在用参数」无关：BLE、4G、将来的产测都要它，不能绑在某个通信 AO 上，
-*     也不能随 APP_CFG_BLE_ENABLE 一起消失；
-*   - 写一次记录要跨十几拍总线（页拆分 + 写周期等待），需要一个专门的心跳推进；
-*   - 装配步骤见 docs_sensor/05-任务说明.md#新增 AO 的步骤。
-*
-* 并发与数据流（都在 QV 同一个主栈上，不抢占）：
-*   写：AT 命令 → App_Store_SetName()（立刻改影子并置 dirty）→ 投 STORE_CMD_SIG
-*        → AO_Store 在 ST_READY 看到 dirty → 编码 → 交替槽写入 → 回读校验 → 清 dirty
-*   读：其它 AO / 命令处理直接读影子（App_Store_Value），不碰总线
-*   完成通知：I2C 中断 → Store_i2cSink() → 投 STORE_BUS_SIG（只投递，不做业务）
-*===========================================================================*/
+ * store.h —— App 层：AO_Store 参数影子与 NOR 配置日志编排
+ * 目标：STM32F103RCT6；内核：QP/C 6.9.1 QV；通过 Service 与抽象 Driver 解耦芯片。
+ * 上电扫描 CRC 与提交标记后选择最新快照；正文回读、提交、最终回读后才清 dirty。
+ * 保存期间的后续编辑保留 dirty；失败保留影子，有限重试后等待下一次编辑。
+ * SPI DMA 由周期推进；I2C sink 仅保留兼容诊断，不用于 Flash 完成通知。
+ *===========================================================================*/
 #ifndef APP_STORE_H
 #define APP_STORE_H
 
@@ -35,7 +16,7 @@
 
 /*! 存储运行状态快照（给调试口 `AT+CFG?` 用，都是只读量）。 */
 typedef struct {
-    bool     present;         /*!< 介质是否应答（EEPROM 在不在）      */
+    bool     present;         /*!< 介质是否应答（Flash 探测与扫描是否成功）      */
     bool     resolved;        /*!< 启动加载阶段是否已结束（成功或失败）*/
     bool     loaded;          /*!< 影子是否来自介质上的有效记录        */
     bool     dirty;           /*!< 有修改还没落盘                      */
@@ -105,9 +86,9 @@ void App_Store_Info(AppStoreInfo *out);
 *
 * @return true = 启动加载已结束，且**没有未落盘的改动**，也没有正在进行的读写。
 *
-* NOTE (谁在用)：`AO_System` 在重启倒计时里等这个条件——复位会打断 EEPROM 写入，
+* NOTE (谁在用)：`AO_System` 在重启倒计时里等这个条件——复位会打断 Flash 编程，
 *   「`AT+TRANSINTVL=5` 紧接着 `AT+REBOOT`」必须等前者落完盘才允许复位。
-* NOTE (为什么不是只看 dirty)：dirty 是在 VERIFY 通过之后才清的，所以
+* NOTE (为什么不是只看 dirty)：dirty 是在提交标记与最终回读通过之后才清的，所以
 *   `!dirty` 已经蕴含「不在写」；这里再看一眼相位，是为了把"还没开始加载"的
 *   上电窗口也算成忙（那时改参数本来就会被拒），避免刚上电就被复位。
 * NOTE (存储关闭时)：`APP_CFG_STORE_ENABLE=0` 时永远返回 true（没有可丢的东西）。

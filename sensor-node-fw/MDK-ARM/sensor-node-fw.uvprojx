@@ -670,6 +670,16 @@
               <FilePath>../App/app/store.c</FilePath>
             </File>
             <File>
+              <FileName>store_params.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/store_params.c</FilePath>
+            </File>
+            <File>
+              <FileName>store_scan.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/store_scan.c</FilePath>
+            </File>
+            <File>
               <FileName>system.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/app/system.c</FilePath>
@@ -683,6 +693,26 @@
               <FileName>svc_at.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/service/svc_at.c</FilePath>
+            </File>
+            <File>
+              <FileName>svc_config_journal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/service/svc_config_journal.c</FilePath>
+            </File>
+            <File>
+              <FileName>svc_config_record.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/service/svc_config_record.c</FilePath>
+            </File>
+            <File>
+              <FileName>svc_config_save.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/service/svc_config_save.c</FilePath>
+            </File>
+            <File>
+              <FileName>svc_config_scan.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/service/svc_config_scan.c</FilePath>
             </File>
             <File>
               <FileName>svc_filter.c</FileName>
@@ -704,6 +734,11 @@
               <FileType>1</FileType>
               <FilePath>../App/service/svc_param.c</FilePath>
             </File>
+            <File>
+              <FileName>svc_storage.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/service/svc_storage.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -718,6 +753,21 @@
               <FileName>drv_sensor.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/driver/drv_sensor.c</FilePath>
+            </File>
+            <File>
+              <FileName>drv_storage.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/driver/drv_storage.c</FilePath>
+            </File>
+            <File>
+              <FileName>drv_w25q32.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/driver/drv_w25q32.c</FilePath>
+            </File>
+            <File>
+              <FileName>drv_w25q32_io.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/driver/drv_w25q32_io.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -743,6 +793,16 @@
               <FileName>bsp_modem_uart.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/bsp/bsp_modem_uart.c</FilePath>
+            </File>
+            <File>
+              <FileName>bsp_spi.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/bsp/bsp_spi.c</FilePath>
+            </File>
+            <File>
+              <FileName>bsp_spi_transfer.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/bsp/bsp_spi_transfer.c</FilePath>
             </File>
             <File>
               <FileName>bsp_uart.c</FileName>

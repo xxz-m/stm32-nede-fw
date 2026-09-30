@@ -31,7 +31,8 @@ typedef enum {
     SVC_ERR_RANGE,   /* 长度 / 数值越界              */
     SVC_ERR_CRC,     /* 校验失败                     */
     SVC_ERR_STATE,   /* 下层设备不可用等状态问题     */
-    SVC_ERR_NOMEM    /* 调用方缓冲不足               */
+    SVC_ERR_NOMEM,   /* 调用方缓冲不足               */
+    SVC_ERR_BUSY     /* 非阻塞作业尚未结束           */
 } svc_status_t;
 
 #define SVC_FRAME_SOF0        (0xAAU)

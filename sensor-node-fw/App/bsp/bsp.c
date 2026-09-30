@@ -152,6 +152,13 @@ void BSP_init(void) {
     * 并清理上次复位可能留下的 BUSY。参数存储的读写在它之上跑。 */
     (void)BSP_i2cInit();
 
+    /* 共享 SPI1：DMA 事务完成由 AO 周期检查，不增加任何 QF-aware IRQ。 */
+    if (BSP_spiInit() != BSP_OK) {
+        BSP_printLine("spi    : SPI1 initialization failed");
+    } else {
+        BSP_printLine("spi    : SPI1 PA5/PA6/PA7, flash CS PA8, shared bus");
+    }
+
     BSP_printLine("------------------------");
 
     /* HAL 时基已经挪到 TIM1，因此 HAL_Init() 不会启动 SysTick，这里把 SysTick

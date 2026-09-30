@@ -147,12 +147,22 @@ static void noteIdentityUnusable(Modem *me) {
 
 /** @brief 连接失败时打印一次诊断读数。 */
 static void logFailure(Modem *me) {
+    BspModemDiag diag;
+
+    BSP_modemUartDiag(&diag);
+    /* NOTE (寄存器快照，2026-09-30 加)：`rx=0` 光看计数**分不清四种原因**，现场为此在示波器上
+    *   耗了很久。把外设状态一并打出来即可当场分开：
+    *     ① `cr1` 的位 5（`RXNEIE`）= 0 → **接收根本没武装**（软件）；
+    *     ② `nvic` = 0                  → **中断没使能**（软件）；
+    *     ③ `brr` 不是该速率的分频值      → **波特率没写进外设**（72 MHz 下 9600 = `0x1D4C`）；
+    *     ④ 以上都正常而 rx 仍为 0        → **引脚上确实没有信号**（回到硬件查电平与接线）。
+    *   读寄存器的动作在 BSP 层（`BSP_modemUartDiag()`）：App 层不得直接接触寄存器（AGENTS 5.1）。 */
     /* NOTE (rx 字段，2026-09-27 加)：uart_err 只能说明「收到了畸形字节」，
     *   区分不了「线上一片安静」和「对方根本不应答」——而波特率配错正好属于后者
     *   （模组听不懂就不会回，我们这边也收不到任何字节、uart_err 一直是 0）。
     *   加上 rx（累计收到字节数）后：rx=0 且 uart_err=0 = 线上一片安静；
     *   rx>0 且 uart_err>0 = 字节来了但成帧失败，优先怀疑波特率。 */
-    LOG_W("modem: link failed reason=%u step=%u rx=%lu tx_ovf=%lu uart_err=%lu",
+    LOG_W("modem: link failed reason=%u step=%u rx=%lu tx_ovf=%lu uart_err=%lu cr1=0x%04lX sr=0x%04lX brr=0x%04lX nvic=%u",
           (unsigned)me->component.failure,
           /* NOTE (step 口径，2026-09-27)：`failure_step` 存的是**从 0 开始**的计划下标，
            *   而 trace 打的是 `step k/N`（从 1 开始）。直接印会出现「trace 说第 18 步失败、
@@ -160,7 +170,11 @@ static void logFailure(Modem *me) {
           (unsigned)me->component.failure_step + 1U,
           (unsigned long)BSP_modemUartRxCount(),
           (unsigned long)BSP_modemOverflowCount(),
-          (unsigned long)BSP_modemErrorCount());
+          (unsigned long)BSP_modemErrorCount(),
+          (unsigned long)diag.cr1,
+          (unsigned long)diag.sr,
+          (unsigned long)diag.brr,
+          (unsigned)diag.nvic);
 }
 
 /** @brief 进入在线态时打印一次。 */

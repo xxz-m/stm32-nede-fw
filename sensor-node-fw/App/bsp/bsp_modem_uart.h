@@ -70,6 +70,29 @@ uint32_t BSP_modemUartRxCount(void);
 * @note  启动日志用它，避免「宏改了但没生效」被日志掩盖（见 bsp_modem_uart.c 的 NOTE）。 */
 uint32_t BSP_modemUartBaud(void);
 
+/** @brief 端口与外设的**运行期诊断快照**（只读寄存器，无副作用）。
+*
+* NOTE (为什么需要它，2026-09-30)：现场遇到「模组明明在应答、MCU 却一个字节都收不到」
+*   （日志 `rx=0`、`uart_err=0`）时，光看计数**分不清四种完全不同的原因**：
+*     ① 接收根本没武装（`CR1.RXNEIE = 0`）；
+*     ② NVIC 里那一位没使能（`nvic = 0`）；
+*     ③ 波特率没真正写进外设（`brr` 不是该速率对应的分频值）；
+*     ④ 以上都正常 —— 那就是引脚上真的没有信号（硬件/电平）。
+*   把这三个寄存器与 NVIC 使能位打进失败日志，一眼即可分开；否则只能在示波器上猜。
+*
+* NOTE (为什么放在 BSP)：App 层不得直接接触寄存器（AGENTS.md 5.1），
+*   读寄存器的动作只能在 BSP 层做，App 只消费这里给出的值。 */
+typedef struct {
+    uint32_t cr1;   /*!< `USART_CR1`：位 5 = `RXNEIE`（接收中断使能）        */
+    uint32_t sr;    /*!< `USART_SR`：位 5 = `RXNE`、位 3 = `ORE`、位 1 = `FE` */
+    uint32_t brr;   /*!< 波特率分频器：72 MHz 下 9600 → `0x1D4C`、115200 → `0x0271` */
+    uint8_t  nvic;  /*!< 1 = NVIC 中该 USART 的 IRQ 已使能                  */
+} BspModemDiag;
+
+/** @brief 取一份端口诊断快照；端口未初始化时全部填 0。
+* @param out [out] 调用方提供的结构；传 NULL 直接返回 */
+void BSP_modemUartDiag(BspModemDiag *out);
+
 /* 中断服务侧入口（由 bsp_uart.c 中的 HAL 公共回调按 huart->Instance 分发，
  * 不在本文件定义 HAL_UART_*Callback，避免与之重复定义） */
 void BSP_modemUartRxComplete(void);

@@ -67,6 +67,43 @@ static UART_HandleTypeDef *uartHandle(bsp_uart_id_t uart) {
     return (UART_HandleTypeDef *)0;   /* USART1 是调试口，不分配给业务端口 */
 }
 
+/** @brief 给本端口的 **RX 脚**加上内部上拉（实例 → 引脚：USART2→PA3、USART3→PB11）。
+ *
+ *  NOTE (为什么补这个上拉，2026-09-30)：`usart.c` 的 MspInit 把 RX 配成
+ *    `GPIO_MODE_INPUT + GPIO_NOPULL`（纯高阻）。模组 TX 正常推挽驱动时两者毫无差别；
+ *    但模组**暂时不驱动**时（未上电、或它的 TX 处于高阻），纯高阻的引脚会浮空乱漂、
+ *    偶发被当成起始位而收到垃圾字节。补一个内部上拉（≈40 kΩ）后：
+ *      - 空闲稳定为高（符合 UART 空闲电平）；
+ *      - 模组驱动时毫不受影响（40 kΩ 被推挽输出直接压过）；
+ *      - RX 线上串了 1 kΩ 之类的限流电阻也不受影响（静态几乎无电流）。
+ *
+ *  NOTE (为什么在这里而不是改 `.ioc`/`usart.c`)：生成代码只在 `USER CODE` 区内可改
+ *    （AGENTS.md 4.1），而「本端口拥有自己那两脚的配置」已是既有做法——见上面的
+ *    `modemPowerEnable()`（它同样在 BSP 里配 PB9）。引脚**随实例解析**，
+ *    因此把端口切到 USART2 也不需要改这里。 */
+static void modemRxPullUp(void) {
+    GPIO_InitTypeDef gpio = {0};
+    GPIO_TypeDef *port;
+
+    if (l_uart == (UART_HandleTypeDef *)0) {
+        return;
+    }
+    if (l_uart->Instance == USART2) {
+        port = GPIOA;
+        gpio.Pin = GPIO_PIN_3;
+    }
+    else if (l_uart->Instance == USART3) {
+        port = GPIOB;
+        gpio.Pin = GPIO_PIN_11;
+    }
+    else {
+        return;   /* 调试口 USART1 不归本端口管 */
+    }
+    gpio.Mode = GPIO_MODE_INPUT;
+    gpio.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(port, &gpio);
+}
+
 /*--------------------------------------------------------------------------*/
 /* 发送：非阻塞入队 + 发送中断分块搬出                                        */
 /*--------------------------------------------------------------------------*/
@@ -240,6 +277,10 @@ void BSP_modemUartInit(ModemPort *port, bsp_uart_id_t uart) {
         ++l_errorCount;   /* 配置失败：链路必然不通，由 AO 的失败日志暴露出来 */
     }
 
+    /* NOTE (必须在 HAL_UART_Init() 之后)：若本次是**首次**初始化，MspInit 会把 RX 重新配成
+     *   NOPULL，先配的上拉会被覆盖掉。放在这里保证无论如何都是上拉生效。 */
+    modemRxPullUp();
+
     (void)HAL_UART_Receive_IT(l_uart, &l_rxByte, 1U);
     port->context = l_uart;
     port->write = &portWrite;
@@ -290,6 +331,40 @@ void BSP_modemUartError(void) {
 
 uint32_t BSP_modemOverflowCount(void) {
     return l_overflow;
+}
+
+/*..........................................................................*/
+void BSP_modemUartDiag(BspModemDiag *out) {
+    IRQn_Type irq;
+
+    if (out == (BspModemDiag *)0) {
+        return;
+    }
+    out->cr1 = 0U;
+    out->sr = 0U;
+    out->brr = 0U;
+    out->nvic = 0U;
+    if ((l_uart == (UART_HandleTypeDef *)0) ||
+        (l_uart->Instance == (USART_TypeDef *)0)) {
+        return;   /* 端口还没初始化：留全 0，调用方据此判断「压根没配」 */
+    }
+    out->cr1 = (uint32_t)l_uart->Instance->CR1;
+    out->sr  = (uint32_t)l_uart->Instance->SR;
+    out->brr = (uint32_t)l_uart->Instance->BRR;
+
+    /* NOTE (实例 → 中断号)：本端口的实例由装配点决定（当前 USART3），不能写死；
+     *   `NVIC->ISER[]` 每位对应一个 IRQ，序号除以 32 是数组下标、余数是位号。 */
+    if (l_uart->Instance == USART2) {
+        irq = USART2_IRQn;
+    }
+    else if (l_uart->Instance == USART3) {
+        irq = USART3_IRQn;
+    }
+    else {
+        irq = USART1_IRQn;
+    }
+    out->nvic = (uint8_t)((NVIC->ISER[((uint32_t)irq >> 5U)] >>
+                           ((uint32_t)irq & 0x1FU)) & 1U);
 }
 
 uint32_t BSP_modemErrorCount(void) {

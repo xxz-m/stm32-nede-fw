@@ -65,8 +65,17 @@
 
 /* 参数存储（I2C EEPROM） ---------------------------------------------------*/
 /*! 1 = 启用掉电参数存储（I2C EEPROM + AT24C04 驱动 + AO_Store）；
-*  0 = 整体关闭总线访问，参数退化为「只有编译期默认值」（影子仍在，各层调用点不变）。 */
-#define APP_CFG_STORE_ENABLE            (1U)
+*  0 = 整体关闭总线访问，参数退化为「只有编译期默认值」（影子仍在，各层调用点不变）。
+*
+*  ⚠️ NOTE (2026-09-29 **临时测试配置**，发版前必须改回 1)：新板到手要先测业务功能、
+*   存储芯片还没上，因此关掉它。关掉后的可预期行为：
+*     - 不碰 I2C 总线；`AT+CFG?` 会显示未就绪/无介质，启动横幅的 `store:` 行也会说明；
+*     - 参数**改得动但存不住**：`AT+SN=` / `AT+TRANSINTVL=` 都只改 RAM，**重启回默认值**；
+*     - `AT&F` 无意义（本来就在默认值上）；
+*     - **`SN` 的“出厂默认值”判据会被编译掉**（见 `SVC_Param_CheckDeviceId()` 的 `#if`），
+*       所以下面 `APP_CFG_BLE_SN` 填什么就能上什么 —— 这正是这种构建能测 4G 的前提。
+*   回滚：把本宏改回 `(1U)` 并同步恢复 `APP_CFG_BLE_SN` 的出厂值（见该宏的 NOTE）。 */
+#define APP_CFG_STORE_ENABLE            (0U)
 /*! I2C 从机 7 位地址。AT24C04 的 A1/A2 全部接地时为 0x50（用户 2026-09-27 确认）。
 *  换接线只改这一行；地址不确定时用调试口的 `AT+I2C?` 扫描确认。 */
 #define APP_CFG_STORE_I2C_ADDR          (0x50U)
@@ -173,11 +182,19 @@
 #define APP_CFG_BLE_REPORT_PERIOD_S           (60U)
 
 /*! 产品身份与小程序配置；通用组件内不得写死这些值。
+*
+*  ⚠️ NOTE (2026-09-29 **临时测试值**，发版前必须改回 `"VWA2608A0013"`)：
+*   当前填的是**平台那台设备的 deviceId**，配合上面 `APP_CFG_STORE_ENABLE = 0` 使用 ——
+*   存储关掉后 `SN` 只能是编译期默认值，而 `SN` 就是 MQTT 主题里的 `deviceId`，
+*   所以想连上平台就必须把它写死成平台认的那个串。
+*   另：存储关闭时 `SVC_Param_CheckDeviceId()` 不再把"等于本默认值"判成"产线没刷"
+*   （那条判据被 `#if` 编译掉），否则这个构建的 4G 会永远起不来。
+*
 *  NOTE (2026-09-28 删掉 `APP_CFG_BLE_NAME`)：产品决定**蓝牙广播名就是 SN**，于是宏与
 *   参数槽位都不再需要「独立的广播名」（见 svc_param.h 的退役槽位 NOTE）。原来的
 *   `APP_CFG_BLE_NAME` 与 `APP_CFG_BLE_SN` 默认值恰好相同，留着它反而会被误认为
 *   「改这个宏就能改广播名」，而实际广播名取 `SVC_PARAM_BLE_SN`。 */
-#define APP_CFG_BLE_SN                        "VWA2608A0013"
+#define APP_CFG_BLE_SN                        "sftest0004"
 #define APP_CFG_BLE_PIN                       "062500"
 #define APP_CFG_BLE_SERVICE_UUID              "CDAB0000-1234-5678-1234-56789ABCDEF0"
 #define APP_CFG_BLE_DEVICE_NAME               "VWA-0013"

@@ -1,4 +1,4 @@
-# AGENTS.md — sensor-node-fw 工作区约束
+﻿# AGENTS.md — sensor-node-fw 工作区约束
 
 - **适用范围**：`E:\stm32\sensor-node-fw` 整个工作区（含 `sensor-node-fw/`、`docs_sensor/`）。
 - **约束对象**：任何 AI 助手、脚本或自动化流程。
@@ -53,7 +53,7 @@ E:\stm32\sensor-node-fw\
 │   │   ├── app\        App 应用层：app.c（装配点 App_start）· command_dispatch.*（统一命令执行）· app_signals.h（信号分段）· app_prio.h（优先级）· node.*（控制台/AT 通道）· sensor.*（采样 AO）· ble.*（AO_Ble）· modem.*（AO_Modem）· store.*（AO_Store，掉电参数存储）
 │   │   ├── app_command\ 可移植命令模型：app_command.h（来源、SvcAtCmd、关联 ID、统一结果）
 │   │   ├── service\    Service 服务层：svc_filter.*（中值/滑动平均）· svc_frame.*（CRC-16/组帧/解析）· svc_at.*（AT 解析）· svc_log.*（异步日志）· svc_param.*（参数记录编解码）
-│   │   ├── driver\     Driver 器件驱动层：drv_types.h（层公共状态码）· drv_sensor.*（统一传感器接口，当前为仿真数据源）· drv_at24c04.*（AT24C04 非阻塞驱动）
+│   │   ├── driver\     Driver 器件驱动层：drv_types.h（层公共状态码）· drv_scl3300.*（SCL3300-D01 三轴倾角仪，SPI/PA4/非阻塞）· drv_at24c04.*（AT24C04 非阻塞驱动）· drv_storage/drv_w25q32.*（SPI NOR 参数存储）
 │   │   ├── component\  可移植通信组件：业务核心 + 可替换芯片后端，禁止依赖 HAL/QP/RTOS
 │   │   │                ble\（VG6328）与 modem\（ML307C/NT26/MN316 + 增量 AT 引擎）
 │   │   ├── bsp\        BSP 板级支持层：bsp.*（QP 钩子、时钟节拍）· bsp_uart.*（USART1 + 异步日志）· bsp_ble_uart.*（BLE 端口，实例由 APP_CFG_BLE_UART_ID 决定，当前 USART2）· bsp_modem_uart.*（4G 端口，实例由 APP_CFG_MODEM_UART_ID 决定，当前 USART3）· bsp_i2c.*（I2C1 非阻塞主机，参数存储用；I2C 中断使能与 IRQ 入口在本文件，不在 .ioc）
@@ -98,6 +98,16 @@ E:\stm32\sensor-node-fw\
 ### 4.2 其他工作区规则
 
 - **临时产物不入库**：中间文件、日志、解包内容、一次性脚本放系统临时目录（例如 `%TEMP%`）；`MDK-ARM/Objects`、`Listings`、`DebugConfig`、`RTE` 等编译产物不纳入版本管理。
+- **非代码文件（文档、图片、PDF、数据表等）的增删纪律**（2026-10-10 用户明确）：
+  1. **入库前先判相关性**：想新增任何非代码文件时，先确认它是否**与本仓库文档相关**
+     （即能对应到 `docs_sensor/*`、`README.md`、`QP_INTEGRATION.md`、各层 `README.md`
+     或某个已登记器件/协议的手册）。**相关才入库**，并且要**追加到已有的那篇文档**里
+     （补进正文、表格或参考链接），而不是另起一个新文件。
+  2. **不相关的临时产物立即清理**：解析中间文件、抽取出来的文本、渲染出的图片、
+     一次性脚本等，一旦用完就删掉，**不允许留在工作区**。这类东西放系统临时目录
+     （见上一条），不要放在仓库目录里。
+  3. **新增文件后必须确认**：本次改动里**如果新增了非代码文件**，在收尾时必须
+     **主动询问用户「是否需要保留这个文件」**——用户确认后才能留下，未确认的按第 2 条删除。
 - **不引入新框架**：不引入 RTOS、不使用第二个事件框架；新增第三方库必须先在 `ThirdParty/README.md` 登记来源/版本/许可，并说明体积与用途。
 - **不改 `Qpc/` 里的 QP 源码**，除非是为解决编译器兼容问题；每处改动必须带 `NOTE (...)` 注释，并在 `Qpc/README.md` 的改动表登记。注意 QP/C 为 GPLv3 / 商业双许可，闭源产品需另行购买商业许可。
 - **新增/删除源文件后必须同步 MDK 工程分组**——跑一次 `apply_qp_to_keil.ps1` 即可（自动发现）；漏加时编译不报错，只在链接期以“符号未定义”暴露。

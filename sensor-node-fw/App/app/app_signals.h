@@ -47,6 +47,7 @@ enum AppSignals {
     /* ---------- AO_Sensor 段 64..95 ---------- */
     SENSOR_SIG_BASE = NODE_SIG_END,
     SENSOR_SAMPLE_SIG = SENSOR_SIG_BASE,    /* 1 Hz 采样时间事件            */
+    SENSOR_PROCESS_SIG,                     /* 推进 SCL3300 的非阻塞状态机  */
     SENSOR_SIG_END = SENSOR_SIG_BASE + 32,
 
     /* ---------- AO_Heartbeat 段 96..127 ---------- */

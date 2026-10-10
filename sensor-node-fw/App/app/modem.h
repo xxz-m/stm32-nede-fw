@@ -8,11 +8,15 @@
 #include "qpc.h"
 #include <stdint.h>
 
-/*! AO_Sensor 发来的采样快照；只带组件需要的两个物理量。 */
+/*! AO_Sensor 发来的采样快照。
+*  NOTE (2026-10-10)：湿度已随仿真源删除（SCL3300 无湿度通道），
+*  改为三轴倾角（0.01° 标度）+ 片内温度（0.01 °C）。 */
 typedef struct {
     QEvt super;
-    int32_t temperature_cC;   /* 温度，0.01 °C   */
-    uint16_t humidity_permil; /* 相对湿度，0.1 %RH */
+    int32_t temperature_cC;   /* 片内温度，0.01 °C */
+    int32_t angle_x_cdeg;     /* X 轴倾角，0.01°   */
+    int32_t angle_y_cdeg;     /* Y 轴倾角，0.01°   */
+    int32_t angle_z_cdeg;     /* Z 轴倾角，0.01°   */
 } ModemMeasurementEvt;
 
 void Modem_ctor(void);

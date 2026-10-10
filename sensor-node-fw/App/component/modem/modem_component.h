@@ -55,10 +55,14 @@ typedef struct {
     uint32_t report_period_s;  /* 默认上报周期，单位秒                          */
 } ModemConfig;
 
-/*! 采样快照；由 App 层的 AO 填入（临时量），组件只读不改。 */
+/*! 采样快照；由 App 层的 AO 填入（临时量），组件只读不改。
+*  NOTE (2026-10-10)：湿度字段已删除——SCL3300-D01 没有湿度通道；
+*  改为三轴倾角（0.01° 标度）。属性名见 modem_component.c 的 MODEM_PROP_ANGLE_*。 */
 typedef struct {
-    int32_t temperature_cC;    /* 温度，0.01 °C                                 */
-    uint16_t humidity_permil;  /* 相对湿度，0.1 %RH                             */
+    int32_t temperature_cC;    /* 片内温度，0.01 °C（传感器芯片自身温度）        */
+    int32_t angle_x_cdeg;      /* X 轴倾角，0.01°                                */
+    int32_t angle_y_cdeg;      /* Y 轴倾角，0.01°                                */
+    int32_t angle_z_cdeg;      /* Z 轴倾角，0.01°                                */
     int32_t signal_quality;    /* 信号质量；入网阶段由后端从 CSQ 填入           */
     char tac[MODEM_COMPONENT_CELL_FIELD_MAX];      /* 跟踪区码，十六进制文本  */
     char cell_id[MODEM_COMPONENT_CELL_FIELD_MAX];  /* 小区标识，十六进制文本  */

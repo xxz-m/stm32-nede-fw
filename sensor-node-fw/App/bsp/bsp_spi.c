@@ -64,6 +64,11 @@ bsp_status_t BSP_spiInit(void) {
     GPIO_InitTypeDef gpio = {0};
     BspSpiConfig const flash = { BSP_SPI_PORT_A, APP_CFG_FLASH_CS_PIN,
                                  APP_CFG_FLASH_SPI_MODE, APP_CFG_FLASH_SPI_DIVIDER };
+    /* SCL3300-D01：片选 PA4（用户 2026-10-10 确认），模式 0、APB2/32 = 2.25 MHz。
+     * 与 Flash 同为 Mode 0，因此共享 SPI1 时不需要在事务间切换模式，
+     * 只由事务模块按设备重写 CR1 的分频位。 */
+    BspSpiConfig const sensor = { (BspSpiPort)APP_CFG_SCL3300_CS_PORT, APP_CFG_SCL3300_CS_PIN,
+                                  APP_CFG_SCL3300_SPI_MODE, APP_CFG_SCL3300_SPI_DIVIDER };
     __HAL_RCC_GPIOA_CLK_ENABLE();
     __HAL_RCC_SPI1_CLK_ENABLE();
     __HAL_RCC_DMA1_CLK_ENABLE();
@@ -71,6 +76,9 @@ bsp_status_t BSP_spiInit(void) {
     __HAL_RCC_SPI1_RELEASE_RESET();
     /* 先释放 Flash CS，再切换 SCK/MOSI 复用，避免初始化边沿被误当成指令。 */
     if (BSP_spiDeviceConfigure(BSP_SPI_FLASH, &flash) != BSP_OK) { return BSP_ERR_PARAM; }
+    /* 传感器的片选同样是「先写高再配输出」，且在 SCK/MOSI 复用之前完成，
+     * 保证复用切换产生的边沿不会被 SCL3300 当成一帧。 */
+    if (BSP_spiDeviceConfigure(BSP_SPI_SENSOR, &sensor) != BSP_OK) { return BSP_ERR_PARAM; }
     gpio.Pin = GPIO_PIN_5 | GPIO_PIN_7;
     gpio.Mode = GPIO_MODE_AF_PP;
     gpio.Speed = GPIO_SPEED_FREQ_HIGH;

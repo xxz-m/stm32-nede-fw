@@ -139,6 +139,53 @@
 /*! 滑动平均窗口长度 */
 #define APP_CFG_SENSOR_MAVG_LEN     (4U)
 
+/* SCL3300-D01 三轴倾角仪（SPI1 共享总线，片选 PA4） ------------------------*/
+/* NOTE (2026-10-10 接入真实器件)：本工程原先的传感器是 drv_sensor.c 里的**仿真
+ *   数据源**，已按用户要求整体删除。当前唯一的传感器实现是 SCL3300-D01，
+ *   手册：Murata SCL3300-D01 Doc.No. 4921 Rev. 4。以下常量全部取自手册，
+ *   改动前请对照手册 5.1.4 / 6.5 / 6.6 / 4.2 三节。 */
+/*! 片选引脚（端口固定为 GPIOA，见下方 CS_PORT）。 */
+#define APP_CFG_SCL3300_CS_PIN          (4U)
+/*! 片选端口编号：0=A、1=B、2=C（对应 BspSpiPort）。 */
+#define APP_CFG_SCL3300_CS_PORT         (0U)
+/*! SPI 模式：手册 5.1.2 明确「This equals to SPI Mode 0 (CPOL = 0 and CPHA = 0)」，
+ *  与 W25Q32 相同，因此共享 SPI1 时无需按设备切换模式。 */
+#define APP_CFG_SCL3300_SPI_MODE        (0U)
+/*! 分频（相对 APB2 72 MHz）。手册建议 2–4 MHz；/32 = 2.25 MHz 落在区间内，
+ *  且比 Flash 的 /8 = 9 MHz 慢，长走线更稳。 */
+#define APP_CFG_SCL3300_SPI_DIVIDER     (32U)
+/*! 测量模式编号 1..4：默认 **Mode 3**（Inclination mode，±10°，10 Hz LPF，
+ *  噪声密度 32 µg）。Mode 4 噪声更低（X/Z 轴 20 µg）但同样是 ±10°。 */
+#define APP_CFG_SCL3300_MODE            (3U)
+/*! 相邻两次 SPI 请求之间 CSB 必须为高的最小时间（毫秒）。
+ *  NOTE (手册原文)：5.1.2 节要求 ≥ 10 µs，否则「output data will be corrupted」。
+ *  本状态机由 1 Hz 采样事件驱动、非阻塞推进，实际帧间隔远大于 10 µs；
+ *  这里取 1 ms 是为了给共享 SPI1 上的 Flash 作业让路，同时留足裕量。 */
+#define APP_CFG_SCL3300_FRAME_GAP_MS    (1U)
+/*! SW Reset 之后的等待：手册 4.2 启动流程第 3 步给出 3 ms
+ *  （Memory reading + Settling of signal path）。 */
+#define APP_CFG_SCL3300_RESET_WAIT_MS   (3U)
+/*! 单次 SPI 事务的超时（毫秒）；超时判 DRV_ERR_TIMEOUT。 */
+#define APP_CFG_SCL3300_XFER_TIMEOUT_MS (20U)
+/*! 推进驱动非阻塞状态机的周期（毫秒）。一次采样共 14 帧，每帧分「发起 / 取结果」
+ *  两步推进；20 ms 一拍时整次采样约 300 ms 完成，远小于 1 s 采样周期。 */
+#define APP_CFG_SCL3300_PROCESS_PERIOD_MS (20U)
+/*! READY 之后放弃整次采样的期限（毫秒）。1 Hz 采样下若跨过两个周期仍未完成，
+ *  说明总线或器件异常，直接判超时而不是无限等待。 */
+#define APP_CFG_SCL3300_JOB_TIMEOUT_MS  (1500U)
+/*! 角度输出的换算分母：手册 2.5 节 `Angle [°] = ANG_raw / 2^14 * 90`，
+ *  即 2^14 = 16384。换算成 0.01° 标度时用 `ANG_raw * 9000 / 16384`。 */
+#define APP_CFG_SCL3300_ANG_DIV         (16384L)
+/*! 角度的 0.01° 系数：90° / 2^14 * 100 = 9000 / 16384。 */
+#define APP_CFG_SCL3300_ANG_CDEG_NUM    (9000L)
+/*! 温度的换算：手册 6.1.2 节 `T [°C] = TEMP_raw / 18.9 - 273`。
+ *  换算成 0.01 °C 标度时用 `TEMP_raw * 10000 / 189 - 27300`。 */
+#define APP_CFG_SCL3300_TEMP_DIV        (189L)
+#define APP_CFG_SCL3300_TEMP_CC_NUM     (10000L)
+#define APP_CFG_SCL3300_TEMP_CC_OFF     (27300L)
+/*! 上电后自动启动采样（与改造前一致：装配点投递 SYS_SENSOR_START_SIG）。 */
+#define APP_CFG_SCL3300_AUTOSTART       (1U)
+
 /* 系统动作：延迟复位（AO_System）-------------------------------------------*/
 /*! 重启倒计时的检查周期（毫秒）。每拍只做几次只读判断，代价极低。 */
 #define APP_CFG_SYSTEM_PROCESS_PERIOD_MS    (100U)

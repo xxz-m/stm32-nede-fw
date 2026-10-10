@@ -441,7 +441,9 @@ static QState active(Modem * const me, QEvt const * const e) {
         case MODEM_MEASUREMENT_SIG: {
             ModemMeasurementEvt const *snapshot = (ModemMeasurementEvt const *)e;
             me->component.data.temperature_cC = snapshot->temperature_cC;
-            me->component.data.humidity_permil = snapshot->humidity_permil;
+            me->component.data.angle_x_cdeg = snapshot->angle_x_cdeg;
+            me->component.data.angle_y_cdeg = snapshot->angle_y_cdeg;
+            me->component.data.angle_z_cdeg = snapshot->angle_z_cdeg;
             return Q_HANDLED();
         }
         default:

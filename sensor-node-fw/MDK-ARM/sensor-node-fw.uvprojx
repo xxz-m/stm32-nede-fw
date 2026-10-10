@@ -340,7 +340,7 @@
               <MiscControls></MiscControls>
               <Define>USE_HAL_DRIVER,STM32F103xE,QV_PRJ</Define>
               <Undefine></Undefine>
-              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../App/inc;../Qpc/platform/inc;../Qpc/port/qv/inc;../App/app;../App/bsp;../App/service;../App/driver;../App/component;../App/component/ble;../App/component/ble/backend;../App/component/ble/examples;../App/component/modem;../App/component/modem/backend;..\App\app_command;../App/app_command</IncludePath>
+              <IncludePath>../Core/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc;../Drivers/STM32F1xx_HAL_Driver/Inc/Legacy;../Drivers/CMSIS/Device/ST/STM32F1xx/Include;../Drivers/CMSIS/Include;../Qpc/platform/inc;../Qpc/port/qv/inc;../App/app;../App/bsp;../App/service;../App/driver;../App/component;../App/component/ble;../App/component/ble/backend;../App/component/ble/examples;../App/component/modem;../App/component/modem/backend;..\App\app_command;../App/app_command</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -626,7 +626,7 @@
         <Group>
           <GroupName>::CMSIS</GroupName>
         </Group>
-        <Group>
+              <Group>
           <GroupName>App</GroupName>
           <Files>
             <File>
@@ -750,9 +750,9 @@
               <FilePath>../App/driver/drv_at24c04.c</FilePath>
             </File>
             <File>
-              <FileName>drv_sensor.c</FileName>
+              <FileName>drv_scl3300.c</FileName>
               <FileType>1</FileType>
-              <FilePath>../App/driver/drv_sensor.c</FilePath>
+              <FilePath>../App/driver/drv_scl3300.c</FilePath>
             </File>
             <File>
               <FileName>drv_storage.c</FileName>
@@ -936,7 +936,7 @@
             </File>
           </Files>
         </Group>
-      </Groups>
+</Groups>
     </Target>
   </Targets>
 

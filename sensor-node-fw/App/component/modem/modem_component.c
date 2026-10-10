@@ -1200,7 +1200,11 @@ static void connectLoop(ModemComponent *me, uint32_t now) {
  *    本设备当前上报的量（温度/湿度/信号/小区）与那个样例里的振弦量（频率模数/应力）
  *    **不是同一套物模型**，所以除 `temperature` 外的名字都还是**待平台确认**的占位值。 */
 #define MODEM_PROP_TEMPERATURE   "temperature"
-#define MODEM_PROP_HUMIDITY      "humidity"
+/* NOTE (2026-10-10)：湿度属性已删除（SCL3300 无湿度），改为三轴倾角。
+ * 名字按 docs_sensor/10-4G业务参数清单.md 的业务约定，仍属**待平台确认**的占位值。 */
+#define MODEM_PROP_ANGLE_X       "angle_x"
+#define MODEM_PROP_ANGLE_Y       "angle_y"
+#define MODEM_PROP_ANGLE_Z       "angle_z"
 #define MODEM_PROP_SIGNAL        "signal_quality"
 #define MODEM_PROP_CELL_TAC      "cell_tac"
 #define MODEM_PROP_CELL_ID       "cell_id"
@@ -1236,7 +1240,15 @@ static bool buildReport(ModemComponent *me) {
         return false;
     }
     if (!appendDecimal(me->payload, sizeof(me->payload), &used,
-                       MODEM_PROP_HUMIDITY, (int32_t)me->data.humidity_permil, 1U)) {
+                       MODEM_PROP_ANGLE_X, me->data.angle_x_cdeg, 2U)) {
+        return false;
+    }
+    if (!appendDecimal(me->payload, sizeof(me->payload), &used,
+                       MODEM_PROP_ANGLE_Y, me->data.angle_y_cdeg, 2U)) {
+        return false;
+    }
+    if (!appendDecimal(me->payload, sizeof(me->payload), &used,
+                       MODEM_PROP_ANGLE_Z, me->data.angle_z_cdeg, 2U)) {
         return false;
     }
     if (!appendInteger(me->payload, sizeof(me->payload), &used,
@@ -1291,8 +1303,14 @@ static bool formatReadField(ModemComponent *me, char const *name,
     if (strcmp(name, MODEM_PROP_TEMPERATURE) == 0) {
         return formatDecimal(out, capacity, me->data.temperature_cC, 2U);
     }
-    if (strcmp(name, MODEM_PROP_HUMIDITY) == 0) {
-        return formatDecimal(out, capacity, (int32_t)me->data.humidity_permil, 1U);
+    if (strcmp(name, MODEM_PROP_ANGLE_X) == 0) {
+        return formatDecimal(out, capacity, me->data.angle_x_cdeg, 2U);
+    }
+    if (strcmp(name, MODEM_PROP_ANGLE_Y) == 0) {
+        return formatDecimal(out, capacity, me->data.angle_y_cdeg, 2U);
+    }
+    if (strcmp(name, MODEM_PROP_ANGLE_Z) == 0) {
+        return formatDecimal(out, capacity, me->data.angle_z_cdeg, 2U);
     }
     if (strcmp(name, MODEM_PROP_SIGNAL) == 0) {
         return formatInteger(out, capacity, me->data.signal_quality);

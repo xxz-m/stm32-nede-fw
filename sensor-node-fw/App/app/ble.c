@@ -35,7 +35,10 @@ typedef struct {
     BleComponent component;     /* 可移植 BLE 业务组件 */
     BlePort port;               /* BLE 平台端口：UART 收发、时基和日志 */
     BleConfig config;           /* BLE 模组配置，来源于参数存储 */
-    BleParam params[5];         /* BLE 对外参数：频率、温度、信号等 */
+    /*! 对外参数表：7 项，索引与 paramInit() 及 report 分支一一对应。
+     *  NOTE (2026-10-10 由 5 项扩到 7 项)：新增 angle_y / angle_z，
+     *  数组容量必须同步，否则 paramInit() 会越界写。 */
+    BleParam params[7];
 
     uint32_t reportTicks;       /* 周期上报计数 */
     bool failureLogged;         /* 是否已经打印失败日志 */
@@ -68,12 +71,23 @@ static void componentTrace(void *context, char const *text) {
     LOG_D("ble-core: %s", text);
 }
 
+/**
+ * @brief 初始化对外暴露的 BLE 参数表。
+ *
+ * NOTE (2026-10-10 接入 SCL3300)：原 params[0] 是 `frequency`（频率），属于上一版
+ *   仿真/振弦业务的遗留量，已改为三轴倾角；并把 angle_y / angle_z 追加进来。
+ *   倾角用 BLE_VALUE_DECIMAL + 2 位小数，量程按 Mode 3 的 ±10.00° = ±1000（0.01° 标度）。
+ *   温度仍是片内温度（传感器芯片自身温度），不是环境气温。
+ * NOTE (顺序即索引)：下面 report 分支按 params[i] 的下标取值，改顺序要同步改那里。
+ */
 static void paramInit(Ble *me) {
-    me->params[0] = (BleParam){"frequency", "Frequency", "Hz", {BLE_VALUE_INT, {.integer = 0}}, false, 0, 100000, 0, 0};
+    me->params[0] = (BleParam){"angle_x", "Angle X", "deg", {BLE_VALUE_DECIMAL, {.decimal = {0, 2U}}}, false, -1000, 1000, 0, 0};
     me->params[1] = (BleParam){"temperature", "Temperature", "C", {BLE_VALUE_DECIMAL, {.decimal = {0, 2U}}}, false, -4000, 12500, 0, 0};
-    me->params[2] = (BleParam){"signal_quality", "Signal quality", "%", {BLE_VALUE_INT, {.integer = 0}}, false, 0, 100, 0, 0};
-    me->params[3] = (BleParam){"voltage", "Voltage", "mV", {BLE_VALUE_INT, {.integer = 3300}}, false, 0, 5000, 0, 0};
-    me->params[4] = (BleParam){"sample_interval", "Sample interval", "s", {BLE_VALUE_INT, {.integer = APP_CFG_BLE_REPORT_PERIOD_S}}, true, 1, 86400, 0, 0};
+    me->params[2] = (BleParam){"angle_y", "Angle Y", "deg", {BLE_VALUE_DECIMAL, {.decimal = {0, 2U}}}, false, -1000, 1000, 0, 0};
+    me->params[3] = (BleParam){"angle_z", "Angle Z", "deg", {BLE_VALUE_DECIMAL, {.decimal = {0, 2U}}}, false, -1000, 1000, 0, 0};
+    me->params[4] = (BleParam){"signal_quality", "Signal quality", "%", {BLE_VALUE_INT, {.integer = 0}}, false, 0, 100, 0, 0};
+    me->params[5] = (BleParam){"voltage", "Voltage", "mV", {BLE_VALUE_INT, {.integer = 3300}}, false, 0, 5000, 0, 0};
+    me->params[6] = (BleParam){"sample_interval", "Sample interval", "s", {BLE_VALUE_INT, {.integer = APP_CFG_BLE_REPORT_PERIOD_S}}, true, 1, 86400, 0, 0};
 }
 
 static QState initial(Ble * const me, void const * const par) {
@@ -93,7 +107,11 @@ static QState active(Ble * const me, QEvt const * const e) {
             return Q_HANDLED();
         case BLE_PROCESS_SIG: {//每 100 ms 周期触发
             uint32_t period;
-            static char const *const names[] = {"frequency", "temperature", "signal_quality", "voltage", "sample_interval"};
+            /* NOTE (顺序必须与 paramInit() 一致)：上报时按这份名字逐个取参数值。
+             * 2026-10-10 接入 SCL3300 后把 frequency 换成三轴倾角并补全为 7 项。 */
+            static char const *const names[] = {
+                "angle_x", "temperature", "angle_y", "angle_z",
+                "signal_quality", "voltage", "sample_interval"};
             if (!me->started) {
                 /* NOTE (等配置就绪)：本地名、Service UUID、PIN 都来自参数存储，
                 * 必须等介质里的记录读回来之后再探测模组，否则会把编译期默认值
@@ -164,7 +182,8 @@ static QState active(Ble * const me, QEvt const * const e) {
                     LOG_W("ble: initial data report queue busy");
                 }
             } else {
-                period = ((uint32_t)me->params[4].value.value.integer * 1000U) /
+                /* NOTE (索引)：sample_interval 现为 params[6]（2026-10-10 参数表由 5 项扩到 7 项）。 */
+                period = ((uint32_t)me->params[6].value.value.integer * 1000U) /
                          APP_CFG_BLE_PROCESS_PERIOD_MS;
                 if (++me->reportTicks >= period) {
                     me->reportTicks = 0U;
@@ -179,7 +198,11 @@ static QState active(Ble * const me, QEvt const * const e) {
             return Q_HANDLED();
         case BLE_MEASUREMENT_SIG: {
             BleMeasurementEvt const *snapshot = (BleMeasurementEvt const *)e;
+            /* 索引与 paramInit() 一一对应：1=温度、0/2/3=三轴倾角 */
             me->params[1].value.value.decimal.mantissa = snapshot->temperature_cC;
+            me->params[0].value.value.decimal.mantissa = snapshot->angle_x_cdeg;
+            me->params[2].value.value.decimal.mantissa = snapshot->angle_y_cdeg;
+            me->params[3].value.value.decimal.mantissa = snapshot->angle_z_cdeg;
             return Q_HANDLED();
         }
         default:

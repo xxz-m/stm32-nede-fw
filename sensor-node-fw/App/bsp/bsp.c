@@ -152,11 +152,12 @@ void BSP_init(void) {
     * 并清理上次复位可能留下的 BUSY。参数存储的读写在它之上跑。 */
     (void)BSP_i2cInit();
 
-    /* 共享 SPI1：DMA 事务完成由 AO 周期检查，不增加任何 QF-aware IRQ。 */
+    /* 共享 SPI1：DMA 事务完成由 AO 周期检查，不增加任何 QF-aware IRQ。
+     * 两个设备槽都在 BSP_spiInit() 里登记：W25Q32（CS=PA8）与 SCL3300（CS=PA4）。 */
     if (BSP_spiInit() != BSP_OK) {
         BSP_printLine("spi    : SPI1 initialization failed");
     } else {
-        BSP_printLine("spi    : SPI1 PA5/PA6/PA7, flash CS PA8, shared bus");
+        BSP_printLine("spi    : SPI1 PA5/PA6/PA7, flash CS PA8, inclinometer CS PA4");
     }
 
     BSP_printLine("------------------------");

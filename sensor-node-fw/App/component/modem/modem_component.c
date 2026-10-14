@@ -13,6 +13,7 @@
 *   自家形式（主题字符串或"通道[序号]"路由串）。
 *===========================================================================*/
 #include "modem_component.h"
+#include "modem_command.h"
 #include "modem_backend.h"
 #include <stdio.h>
 #include <string.h>
@@ -53,18 +54,7 @@ static char const *const kTopicSuffix[MODEM_TOPIC_COUNT] = {
     "/command/reply"
 };
 
-/*! 每条主题的**前导 '/'**：**一条主题一个宏**，宏在 `app_config.h`
-*  （`APP_CFG_MODEM_TOPIC_PREFIX_*`，经 `modem_component_config.h` 映射进来），有编译期护栏。
-*
-*  NOTE (只有"数据上报"那一条带 '/')：
-*    - `MODEM_TOPIC_REPORT` → `/sensor-product/<did>/properties/report`：平台属性上报页
-*      原文要求「订阅 `/{productId}/{deviceId}/properties/report`」——**带** '/'；
-*    - 其余 9 条（5 条订阅 + 4 条应答）不带 '/'：命令与它的回复都在平台的
-*      「控制主题模板 / 回复主题模板」这一格里闭环，两栏写的都是**4 段、无前导 '/'** 的串。
-*      实测：2026-09-27 平台「上行」栏出现过 `sensor-product/869413084698157/command/reply`。
-*  NOTE (为什么逐条成表)：`#48`→`#62` 的反复说明「按方向一刀切」是错的模型——平台侧是
-*    两个互不相干的主题空间，换形态时应当**指名到主题**。**本表与那 10 个宏一一对应**
-*    （顺序 = `MODEM_TOPIC_*` 枚举顺序），平台要求某一条换形态时只改 `app_config.h` 那一行。 */
+/*! 主题前导斜杠逐项取app_config.h宏，当前新接口均为"/"，历史形态见改动日志。 */
 static char const *const kTopicPrefix[MODEM_TOPIC_COUNT] = {
     MODEM_COMPONENT_TOPIC_PREFIX_REPORT,         /* MODEM_TOPIC_REPORT        数据上报：带 '/' */
     MODEM_COMPONENT_TOPIC_PREFIX_READ,           /* MODEM_TOPIC_READ                         */
@@ -75,7 +65,7 @@ static char const *const kTopicPrefix[MODEM_TOPIC_COUNT] = {
     MODEM_COMPONENT_TOPIC_PREFIX_STATE,          /* MODEM_TOPIC_STATE                        */
     MODEM_COMPONENT_TOPIC_PREFIX_STATE_REPLY,    /* MODEM_TOPIC_STATE_REPLY                  */
     MODEM_COMPONENT_TOPIC_PREFIX_COMMAND,        /* MODEM_TOPIC_COMMAND                      */
-    MODEM_COMPONENT_TOPIC_PREFIX_COMMAND_REPLY   /* MODEM_TOPIC_COMMAND_REPLY 回复：不带 '/' */
+    MODEM_COMPONENT_TOPIC_PREFIX_COMMAND_REPLY   /* MODEM_TOPIC_COMMAND_REPLY 回复：按配置 */
 };
 
 /*! 每类逻辑主题的收发方向；决定后端把它登记为订阅、发布还是两者。 */
@@ -206,43 +196,7 @@ static bool appendDecimal(char *buffer, size_t capacity, size_t *used,
     return append(buffer, capacity, used, part);
 }
 
-/** @brief 追加已转义的 JSON 字符串内容（不含两侧引号）。
-*
-* 平台规则第 6 条要求 `\r\n` 在 JSON 里必须是**两个转义字符**（`\r`+`\n`），
-* 不允许写成物理换行；`"` 与 `\` 也必须转义。原始 AT 回复里三样都会出现，
-* 所以这里逐字符处理，而不是直接 `append()` 原文。
-*
-* @return true = 全部追加成功；false = 容量不够（**不做部分写入**，避免发出半条 JSON）
-*/
-static bool appendJsonEscaped(char *buffer, size_t capacity, size_t *used,
-                              char const *text) {
-    size_t length = strlen(text);
-    size_t index;
-    char part[3];
 
-    /* 最坏情况每个字节都变成两字符转义，先按上界校验，避免写到一半才发现放不下 */
-    if ((*used + (length * 2U) + 1U) > capacity) {
-        return false;
-    }
-    for (index = 0U; index < length; ++index) {
-        switch (text[index]) {
-            case '"':  part[0] = '\\'; part[1] = '"';  break;
-            case '\\': part[0] = '\\'; part[1] = '\\'; break;
-            case '\r': part[0] = '\\'; part[1] = 'r';  break;
-            case '\n': part[0] = '\\'; part[1] = 'n';  break;
-            case '\t': part[0] = '\\'; part[1] = 't';  break;
-            default:
-                part[0] = text[index];
-                part[1] = '\0';
-                break;
-        }
-        part[2] = '\0';
-        if (!append(buffer, capacity, used, part)) {
-            return false;
-        }
-    }
-    return true;
-}
 
 /** @brief 追加 ",\"name\":\"text\""（文本按原样放入，不做转义；调用方保证内容是十六进制或纯文本）。 */
 static bool appendText(char *buffer, size_t capacity, size_t *used,
@@ -299,80 +253,7 @@ static bool jsonString(char const *json, char const *key, char *out, size_t capa
     return true;
 }
 
-/** @brief 从 JSON 里取字符串字段，并**解码转义**（平台 AT 命令下行专用）。
-*
-* 为什么不复用上面的 `jsonString()`：那个只适合「值里绝不会出现引号」的旧字段
-* （`cmd` / `param` / `v`）。平台 AT 命令下行不同——写参数的命令本身就带引号，
-* 例如 `AT+SN="VWA2608A0020"`，在线路上的 JSON 是
-* `{"id":"42","command":"AT+SN=\"VWA2608A0020\""}`。
-* 用 `jsonString()` 会在 `\"` 的那个反斜杠处停住，取到 `AT+SN=\`，静默产生一条残命令。
-*
-* 支持的转义：`\"` `\\` `\/` `\b` `\f` `\n` `\r` `\t`。`\uXXXX` 不支持（AT 命令是
-* ASCII，出现即视为非法并返回 false，宁可拒收也不猜）。
-*
-* @return true = 取到并解码成功，且结果放得下；false = 字段缺失、格式错或缓冲不够
-*/
-static bool jsonStringUnescape(char const *json, char const *key,
-                               char *out, size_t capacity) {
-    char pattern[32];
-    char const *cursor;
-    size_t used = 0U;
-    int produced = snprintf(pattern, sizeof(pattern), "\"%s\"", key);
 
-    if ((produced < 0) || ((size_t)produced >= sizeof(pattern))) {
-        return false;
-    }
-    cursor = strstr(json, pattern);
-    if (cursor == (char const *)0) {
-        return false;
-    }
-    cursor += strlen(pattern);
-    while (*cursor == ' ') {
-        ++cursor;
-    }
-    if (*cursor != ':') {
-        return false;
-    }
-    ++cursor;
-    while (*cursor == ' ') {
-        ++cursor;
-    }
-    if (*cursor != '"') {
-        return false;
-    }
-    ++cursor;
-
-    while ((*cursor != '\0') && (*cursor != '"')) {
-        char decoded = *cursor;
-
-        if (*cursor == '\\') {
-            ++cursor;
-            switch (*cursor) {
-                case '"':  decoded = '"';  break;
-                case '\\': decoded = '\\'; break;
-                case '/':  decoded = '/';  break;
-                case 'b':  decoded = '\b'; break;
-                case 'f':  decoded = '\f'; break;
-                case 'n':  decoded = '\n'; break;
-                case 'r':  decoded = '\r'; break;
-                case 't':  decoded = '\t'; break;
-                default:
-                    return false;   /* 含 \uXXXX 等不支持形式：整条拒收 */
-            }
-        }
-        if ((used + 1U) >= capacity) {
-            return false;
-        }
-        out[used] = decoded;
-        ++used;
-        ++cursor;
-    }
-    if (*cursor != '"') {
-        return false;   /* 没有收尾引号 */
-    }
-    out[used] = '\0';
-    return true;
-}
 
 /** @brief 从约定格式的 JSON 文本里取数值 / 布尔字段的文本形式。 */
 static bool jsonValue(char const *json, char const *key, char *out, size_t capacity) {
@@ -460,7 +341,7 @@ typedef char modemTopicPrefixCheck[
 
 /** @brief 按产品标识、设备标识与后缀拼出全部主题，并分配订阅/发布序号。
 * @note 前导 '/' **按主题取**（`kTopicPrefix[]`，值来自 `app_config.h` 的
-*   `APP_CFG_MODEM_TOPIC_PREFIX_*`）：只有数据上报那条带 '/'，其余一律不带——
+*   `APP_CFG_MODEM_TOPIC_PREFIX_*`）：当前各条均带 '/'；历史旧平台使用不带的命令通道，
 *   '/' 的归属由主题用途决定，与收/发方向无关（见那张表的 NOTE）。
 *   device 与后缀之间的 '/' 由**后缀字符串自己带**（见 `kTopicSuffix` 的 NOTE），别弄混。 */
 static void buildTopics(ModemComponent *me) {
@@ -489,6 +370,17 @@ static void buildTopics(ModemComponent *me) {
         slot->registered = true;
         if (slot->direction != MODEM_DIR_PUBLISH) {
             slot->subscribe_id = me->next_subscribe_id++;
+#if (MODEM_COMPONENT_TOPIC_SUBSCRIBE_COMMAND_ONLY != 0U)
+            /* NOTE (2026-10-14 用户要求：只留 `command` 一条下行订阅)：现场实测订到第 2 条
+             *   （properties/write）之后连接就被 broker 掐断，其后所有订阅与发布一律
+             *   `+CME ERROR:8002`；而本工程对云端只暴露 command 一条下行通道。
+             *   NOTE (序号照常递增)：`next_subscribe_id` 只影响 NT26 的路由登记与日志里的
+             *   `topic k/n`；`topicTotal()/topicIssued()` 按 `subscribe_id != 0` 计数，
+             *   所以日志会正确显示 `topic 1/1`，跳过的主题不会被算进去。 */
+            if (index != (uint8_t)MODEM_TOPIC_COMMAND) {
+                slot->subscribe_id = 0U;
+            }
+#endif
         }
         if (slot->direction != MODEM_DIR_SUBSCRIBE) {
             slot->publish_id = me->next_publish_id++;
@@ -497,6 +389,10 @@ static void buildTopics(ModemComponent *me) {
 }
 
 /*--------------------------------------------------------------- 串口收取 */
+/* NOTE (前向声明)：feedLine() 识别到「会话已丢」时要立刻判链路失效，而 failPlan()
+ * 定义在它后面（与计划推进放在一起，见 #138）。 */
+static void failPlan(ModemComponent *me, ModemFailure failure);
+
 /** @brief 把一整行交给主动通知拦截器或 AT 引擎。 */
 static void feedLine(ModemComponent *me, char const *line, uint32_t now) {
     ModemBackend const *backend = Modem_Backend_Get();
@@ -513,6 +409,27 @@ static void feedLine(ModemComponent *me, char const *line, uint32_t now) {
         MODEM_TRACE(me, line);
     }
 #endif
+
+    /* 会话健康通知（后端可选钩子，2026-10-14）：只在**在线期**处理——连接计划期间由
+     * `MODEM_OP_MQTT_STATE` 的三态判定负责，这里再插一手会与计划打架。
+     * NOTE (为什么必须在这里判)：这些行既不是下行消息（`urc_starts` 只认 +MQTTPUBLISH），
+     *   也不是我们某条命令的应答，空闲时会被下面 `at.phase != WAITING` 直接丢掉。 */
+    if ((me->state == MODEM_COMPONENT_READY) &&
+        (backend->session_notice != (ModemSessionNotice (*)(char const *))0)) {
+        ModemSessionNotice const notice = backend->session_notice(line);
+
+        if (notice == MODEM_SESSION_LOST) {
+            /* 模组已在重连或已断链：会话确定没了（clean=1 下 broker 侧订阅也一起没了），
+             * 直接判链路失效——AO 会整条重建，重建路径天然包含「重新订阅全部主题」。 */
+            MODEM_TRACE(me, "session lost by module notice -> rebuild");
+            failPlan(me, MODEM_FAILURE_RESPONSE);
+            return;
+        }
+        if (notice == MODEM_SESSION_RISK) {
+            /* 一次心跳超时或一条 8002 可能只是瞬时：先复核状态，别盲目重发/重建。 */
+            me->session_check = true;
+        }
+    }
 
     /* 通知优先：负载里常常含裸换行，若当应答文本匹配，负载里恰好出现的 OK
      * 会让状态机误判。已有一条收全的通知时不再接收新行，等上层分发完再说。 */
@@ -623,7 +540,7 @@ static void finishPlan(ModemComponent *me) {
         me->report_period_ms = (uint32_t)MODEM_COMPONENT_REPORT_PERIOD_S * 1000U;
     }
     me->cell_period_ms = (uint32_t)MODEM_COMPONENT_CELL_PERIOD_S * 1000U;
-    me->report_requested = true;   /* 连上先发首报，让平台立刻看到设备 */
+    me->report_requested = false;  /* 首报也必须由 App 先完成一次新采样。 */
     me->state = MODEM_COMPONENT_READY;
     MODEM_TRACE(me, "cloud link ready");
 }
@@ -826,17 +743,33 @@ static void traceStepResult(ModemComponent *me, char const *tag,
 * NOTE (为什么要它)：实测那次「20 分钟后掉线」的导火索是运行期 reason=3，但原实现
 *   在运行期失败路径上只打一行 `cloud link failed`，模组回的具体 CME 码全丢了。 */
 static void traceRuntimeResult(ModemComponent *me, char const *tag,
-                               ModemFailure reason) {
+                               ModemFailure reason, ModemRuntimeOp op) {
     char command[MODEM_DIAG_FIELD_MAX];
     char reply[MODEM_DIAG_REPLY_MAX];
     char line[MODEM_DIAG_LINE_MAX];
     int produced;
 
-    describeField(me->command, command, sizeof(command));
-    describeReply(me->response, reply, sizeof(reply));
-    produced = snprintf(line, sizeof(line),
-                        "runtime %s cmd=\"%s\" rx=\"%s\" reason=%u",
-                        tag, command, reply, (unsigned)reason);
+    if (op == MODEM_RUNTIME_REPORT) {
+        char const *error = strstr(me->response, "+CME ERROR:");
+        char const *end;
+        if (error == NULL) { error = strstr(me->response, "+CMS ERROR:"); }
+        if (error == NULL) { error = strstr(me->response, "ERROR"); }
+        if (error == NULL) { error = strstr(me->response, ":FAIL"); }
+        /* 只取错误文本，不能把命令回显、HEX负载或测量数据刷进失败日志。 */
+        if (error == NULL) { error = "<no error line>"; }
+        for (end = error; *end != '\0' && *end != '\r' && *end != '\n'; ++end) { }
+        (void)copyClean(reply, sizeof(reply), error, end);
+        produced = snprintf(line, sizeof(line),
+                            "runtime publish %s rx=\"%s\" reason=%u attempt=%u/%u",
+                            tag, reply, (unsigned)reason, (unsigned)me->uplink_retry + 1U,
+                            (unsigned)MODEM_COMPONENT_UPLINK_RETRY + 1U);
+    } else {
+        describeField(me->command, command, sizeof(command));
+        describeReply(me->response, reply, sizeof(reply));
+        produced = snprintf(line, sizeof(line),
+                            "runtime %s cmd=\"%s\" rx=\"%s\" reason=%u",
+                            tag, command, reply, (unsigned)reason);
+    }
     if (produced > 0) {
         MODEM_TRACE(me, line);
     }
@@ -927,7 +860,7 @@ static void tracePlanStart(ModemComponent *me) {
 #define traceStepResult(me_, tag_, reason_) ((void)0)
 #define traceStepProgress(me_) ((void)0)
 #define tracePlanStart(me_) ((void)0)
-#define traceRuntimeResult(me_, tag_, reason_) ((void)0)
+#define traceRuntimeResult(me_, tag_, reason_, op_) ((void)0)
 #endif
 
 /** @brief 组装并写出当前步骤的命令；写出失败时只记重试时间，不阻塞。 */
@@ -1255,6 +1188,12 @@ static bool buildReport(ModemComponent *me) {
                        MODEM_PROP_SIGNAL, me->data.signal_quality)) {
         return false;
     }
+    /* 电池属性采用伏、三位小数；ADC 故障或尚无样本时整项省略。 */
+    if (me->data.battery_valid &&
+        !appendDecimal(me->payload, sizeof(me->payload), &used,
+                       "battery_voltage", (int32_t)me->data.battery_mV, 3U)) {
+        return false;
+    }
     /* 取不到的字段整条跳过：宁可报文里没有这个键，也不要报一个假值。 */
     if ((me->data.tac[0] != '\0') &&
         (!appendText(me->payload, sizeof(me->payload), &used,
@@ -1432,37 +1371,22 @@ static void dispatchDownlink(ModemComponent *me, ModemTopic topic) {
     char parameter[40];
     char value[32];
 
+    /* 所有旧主题也遵守单邮箱，不能挤掉新接口已执行命令的应答。 */
+    if (me->downlink_pending || me->reply_pending || me->runtime_op == MODEM_RUNTIME_REPLY) {
+        MODEM_TRACE(me, "downlink busy");
+        return;
+    }
+
     /* 平台 AT 命令下行（规则 3.2）：字段是 `id` + `command`，与旧业务的
      * `cmd` / `param` / `v` 完全不同，所以先单独分流，不参与下面的 cmd 解析。
      * 这里**只拆包，不执行**——执行要访问参数存储，属于 App 层职责。 */
     if (topic == MODEM_TOPIC_COMMAND) {
-        /* 上一条还没被 App 取走时再来一条：给新命令回忙，不覆盖旧命令。
-         * NOTE (为什么不直接覆盖)：覆盖会让**前一条**永远等不到回复，
-         *   平台按规则 3.5 会一直挂着那条命令；回一条失败至少能收口。 */
-        if (me->downlink_pending) {
-            char busyId[MODEM_COMPONENT_DOWNLINK_ID_MAX];
-
-            busyId[0] = '\0';
-            (void)jsonStringUnescape(me->payload, "id", busyId, sizeof(busyId));
-            MODEM_TRACE(me, "downlink command busy; previous one not taken yet");
-            Modem_Component_CompleteCommand(me, busyId, false, "ERROR\r\n");
-            return;
-        }
-        /* 先清空：下面 id 可能取不到，失败应答里要用「空 id」而不是上一次的残留值 */
-        me->downlink_id[0] = '\0';
-        me->downlink_command[0] = '\0';
-        if (jsonStringUnescape(me->payload, "id", me->downlink_id,
-                               sizeof(me->downlink_id)) &&
-            jsonStringUnescape(me->payload, "command", me->downlink_command,
-                               sizeof(me->downlink_command))) {
+        struct ModemCommandRequest request;
+        if (Modem_Command_Parse(me->payload, &request)) {
+            me->downlink = request;
             me->downlink_pending = true;
-            MODEM_TRACE(me, "downlink command queued for the app layer");
         } else {
-            /* 缺字段、转义非法或命令超长：无法执行，也**不能静默**——
-             * 平台侧在等最终回复，这里必须回一条失败应答，否则命令会一直悬着。
-             * id 取不到时用空串，平台按规则 3.5 会忽略这条回复，但至少不卡设备。 */
-            MODEM_TRACE(me, "downlink command rejected (id/command missing or too long)");
-            Modem_Component_CompleteCommand(me, me->downlink_id, false, "ERROR\r\n");
+            Modem_Component_CompleteCommand(me, request.id, request.command, "ERROR\r\n");
         }
         return;
     }
@@ -1505,69 +1429,25 @@ static void handleDownlink(ModemComponent *me) {
 }
 
 /*------------------------------------------------ 云端 AT 命令下行（平台规则） */
-bool Modem_Component_TakeCommand(ModemComponent *me,
-                                 char *id, size_t idCapacity,
-                                 char *command, size_t commandCapacity) {
-    size_t idLength;
-    size_t commandLength;
-
-    if (me == (ModemComponent *)0) {
-        return false;
-    }
-    if (!me->downlink_pending) {
-        return false;
-    }
-    /* 取出即作废：这条命令已经交给 App，组件不再持有它，避免重复执行 */
+bool Modem_Component_TakeCommand(ModemComponent *me, struct ModemCommandRequest *request) {
+    if (me == NULL || request == NULL || !me->downlink_pending) { return false; }
+    *request = me->downlink;
     me->downlink_pending = false;
-
-    idLength = strlen(me->downlink_id);
-    commandLength = strlen(me->downlink_command);
-    if (((id != (char *)0) && (idLength >= idCapacity)) ||
-        ((command != (char *)0) && (commandLength >= commandCapacity))) {
-        /* 调用方的缓冲比组件的小（两边宏没对齐）：宁可整条丢掉并留下日志 */
-        MODEM_TRACE(me, "downlink command dropped (caller buffer too small)");
-        return false;
-    }
-    if (id != (char *)0) {
-        (void)memcpy(id, me->downlink_id, idLength + 1U);
-    }
-    if (command != (char *)0) {
-        (void)memcpy(command, me->downlink_command, commandLength + 1U);
-    }
     return true;
 }
 
-void Modem_Component_CompleteCommand(ModemComponent *me, char const *id, bool ok,
-                                     char const *raw) {
-    char *out;
-    size_t used = 0U;
-    bool built;
-
-    if ((me == (ModemComponent *)0) || (raw == (char const *)0)) {
-        return;
-    }
-    /* 复用 payload 缓冲拼包：下行已经拆完，此刻它是空闲的。
-     * 平台规则第 5 条要求单层 JSON，字段固定为 id / ok / error / data。 */
-    out = me->payload;
-    out[0] = '\0';
-
-    built = append(out, sizeof(me->payload), &used, "{\"id\":\"") &&
-            appendJsonEscaped(out, sizeof(me->payload), &used,
-                              (id != (char const *)0) ? id : "") &&
-            append(out, sizeof(me->payload), &used,
-                   ok ? "\",\"ok\":true,\"data\":\"" :
-                        "\",\"ok\":false,\"error\":\"ERROR\",\"data\":\"") &&
-            appendJsonEscaped(out, sizeof(me->payload), &used, raw) &&
-            append(out, sizeof(me->payload), &used, "\"}");
-
-    if (!built) {
+/** @brief 按新接口封装应答，不能覆盖尚未发布的结果。 */
+void Modem_Component_CompleteCommand(ModemComponent *me, char const *id,
+                                     char const *command, char const *raw) {
+    if (me == NULL || id == NULL || raw == NULL || me->reply_pending ||
+        me->runtime_op == MODEM_RUNTIME_REPLY) { return; }
+    if (!Modem_Command_Format(me->payload, sizeof(me->payload), id, command, raw)) {
         MODEM_TRACE(me, "command reply too long; dropped");
         return;
     }
-    queueReply(me, MODEM_TOPIC_COMMAND_REPLY, out, 1U);
+    queueReply(me, MODEM_TOPIC_COMMAND_REPLY, me->payload, 1U);
 }
 
-/*--------------------------------------------------------------- 在线期推进 */
 /** @brief 起一条运行期命令（应答发布 / 数据上报 / 小区查询）。 */
 static void startRuntime(ModemComponent *me, ModemRuntimeOp op, uint32_t now) {
     ModemBackend const *backend = Modem_Backend_Get();
@@ -1588,17 +1468,54 @@ static void startRuntime(ModemComponent *me, ModemRuntimeOp op, uint32_t now) {
             }
             break;
         case MODEM_RUNTIME_REPORT:
-            if (!buildReport(me)) {
+            if (!me->report_frozen && !buildReport(me)) {
                 MODEM_TRACE(me, "report build overflow");
                 me->report_requested = false;
+                me->failure = MODEM_FAILURE_OVERFLOW;
+                me->report_success = false; me->report_result_available = true;
                 return;
             }
-            if (!backend->publish_build(me, MODEM_TOPIC_REPORT, me->payload, expected,
+            if (!me->report_frozen) {
+                (void)strcpy(me->report_payload, me->payload);
+                me->report_frozen = true;
+            }
+            if (!backend->publish_build(me, MODEM_TOPIC_REPORT, me->report_payload, expected,
                                         sizeof(expected))) {
-                me->report_requested = false;
+                me->report_requested = false; me->failure = MODEM_FAILURE_OVERFLOW;
+                me->report_success = false; me->report_result_available = true;
                 return;
             }
             break;
+        case MODEM_RUNTIME_SIGNAL: {
+            uint8_t step;
+            for (step = 0U; step < backend->plan_count; ++step) {
+                if (backend->plan[step].op == MODEM_OP_SIGNAL) { break; }
+            }
+            if (step == backend->plan_count || !backend->build(me, step, expected, sizeof(expected))) {
+                me->signal_requested = false; me->data.signal_quality = 99;
+                ++me->signal_revision; return;
+            }
+            me->signal_step = step;
+            me->data.signal_quality = 99; /* 不完整应答不能沿用上次信号。 */
+            break;
+        }
+        case MODEM_RUNTIME_STATE: {
+            /* 会话复核（2026-10-14）：复用计划里的 MQTT_STATE 步——命令文本与期望标记
+             * 都从后端来，核心不硬编码任何 AT 文本。 */
+            uint8_t step;
+            for (step = 0U; step < backend->plan_count; ++step) {
+                if (backend->plan[step].op == MODEM_OP_MQTT_STATE) { break; }
+            }
+            if ((step == backend->plan_count) ||
+                (backend->mqtt_state == (int32_t (*)(char const *))0) ||
+                (!backend->build(me, step, expected, sizeof(expected)))) {
+                /* 该后端没有可用的状态查询（或计划里没有这一步）：清掉请求，免得每个周期空转。 */
+                me->session_check = false;
+                return;
+            }
+            me->state_step = step;
+            break;
+        }
         case MODEM_RUNTIME_CELL:
             if (!backend->cell_build(me, expected, sizeof(expected))) {
                 me->cell_requested = false;
@@ -1634,16 +1551,33 @@ static void startRuntime(ModemComponent *me, ModemRuntimeOp op, uint32_t now) {
         if ((length + 2U) >= sizeof(me->command)) {
             me->failure = MODEM_FAILURE_OVERFLOW;
             me->runtime_op = MODEM_RUNTIME_NONE;
+            if (op == MODEM_RUNTIME_REPORT) {
+                me->report_success = false; me->report_result_available = true;
+            }
             failPlan(me, MODEM_FAILURE_OVERFLOW);
             return;
         }
         me->command[length] = '\r';
         me->command[length + 1U] = '\n';
-        if (me->port->write(me->port->context, (uint8_t const *)me->command,
-                            length + 2U) != MODEM_PORT_OK) {
-            /* 串口忙：保留请求，下一个 Process 周期再试。 */
-            me->runtime_op = MODEM_RUNTIME_NONE;
-            return;
+        {
+            modem_port_status_t status = me->port->write(me->port->context,
+                (uint8_t const *)me->command, length + 2U);
+            if (status == MODEM_PORT_BUSY) {
+                me->runtime_op = MODEM_RUNTIME_NONE;
+                return; /* 忙不消耗重试；下次推进仍使用同一份冻结报文。 */
+            }
+            if (status != MODEM_PORT_OK) {
+                me->runtime_op = MODEM_RUNTIME_NONE;
+                if (op == MODEM_RUNTIME_REPORT) {
+                    me->report_success = false; me->report_result_available = true;
+                }
+                if (op == MODEM_RUNTIME_SIGNAL) {
+                    me->signal_requested = false; me->data.signal_quality = 99;
+                    ++me->signal_revision; return;
+                }
+                failPlan(me, MODEM_FAILURE_PORT_WRITE);
+                return;
+            }
         }
     }
     ModemAt_Begin(&me->at, expected, now, timeout_ms);
@@ -1659,6 +1593,19 @@ static void finishRuntime(ModemComponent *me, ModemAtResult result) {
     if (result != MODEM_AT_DONE) {
         me->failure = (result == MODEM_AT_ERROR) ? MODEM_FAILURE_RESPONSE
                                                  : MODEM_FAILURE_TIMEOUT;
+        if (op == MODEM_RUNTIME_SIGNAL) {
+            me->signal_requested = false; me->data.signal_quality = 99;
+            ++me->signal_revision;
+            MODEM_TRACE(me, "signal query failed; using unknown 99"); return;
+        }
+        if (op == MODEM_RUNTIME_STATE) {
+            /* 状态查不到（超时 / 模组回错）：按「会话不可用」处理 —— 清掉复核请求后
+             * 落到下面的通用失败路径，由 failPlan() 让 AO 整条重建。 */
+            me->session_check = false;
+        }
+        if (op == MODEM_RUNTIME_REPORT) {
+            me->report_success = false; me->report_result_available = true;
+        }
         if (op == MODEM_RUNTIME_CELL) {
             /* 小区信息是尽力而为的补充数据，查不到不影响在线状态。 */
             me->cell_requested = false;
@@ -1676,7 +1623,7 @@ static void finishRuntime(ModemComponent *me, ModemAtResult result) {
         /* NOTE (诊断，2026-09-20)：运行期失败原先只打 "cloud link failed" 一行，
          *   模组回的具体错误码全丢（实测那次 20 分钟掉线的导火索就这样丢了现场）。
          *   这里补上命令与应答。 */
-        traceRuntimeResult(me, "fail", me->failure);
+        traceRuntimeResult(me, "fail", me->failure, op);
         /* NOTE (上行重试，2026-09-20)：一条上行走不掉**不再**直接毁掉整条链路。
          *   实测：NB-IoT 上一次上行抖动就让设备在 20 分钟后进重连阶梯，又因模组掉网
          *   后不再自己搜网而最终永久沉默。现在连续 MODEM_COMPONENT_UPLINK_RETRY 次
@@ -1700,13 +1647,19 @@ static void finishRuntime(ModemComponent *me, ModemAtResult result) {
         failPlan(me, me->failure);
         return;
     }
-    me->uplink_retry = 0U;   /* 上行成功：清掉连续失败计数 */
+    /* CSQ成功不代表上行恢复，不能把正在重试的报告计数清零。 */
+    if (op == MODEM_RUNTIME_REPORT || op == MODEM_RUNTIME_REPLY) { me->uplink_retry = 0U; }
     switch (op) {
         case MODEM_RUNTIME_REPLY:
             me->reply_pending = false;
             break;
         case MODEM_RUNTIME_REPORT:
             me->report_requested = false;
+            me->report_success = true; me->report_result_available = true;
+            break;
+        case MODEM_RUNTIME_SIGNAL:
+            if (!backend->apply(me, me->signal_step)) { me->data.signal_quality = 99; }
+            me->signal_requested = false; ++me->signal_revision;
             break;
         case MODEM_RUNTIME_CELL:
             (void)backend->cell_apply(me);
@@ -1719,6 +1672,30 @@ static void finishRuntime(ModemComponent *me, ModemAtResult result) {
             }
             me->location_requested = false;
             break;
+        case MODEM_RUNTIME_STATE: {
+            /* 会话复核结论（2026-10-14）：只看模组报的会话状态值，**5 = 已连接**才算可用。
+             * NOTE (为什么不用 apply())：apply() 对状态 5 还要求「模组里的 host/port/clientId
+             *   与当前身份一致」才置 session_reused，而那是连接**前**读回的比对；会话刚被我们
+             *   重建过（模组里原本是 `(null)`）时它必然为 false，会把握手成功的会话反复判死。
+             *   3/4/6/7（连接中）、0/1/2（未连接）与解析失败一律按不可用处理 → 判链路失效 →
+             *   AO 整条重建，重建路径含 DISC/DEL/CFG/OPEN 与**全部主题的重新订阅**。 */
+            int32_t const state = backend->mqtt_state(me->response);
+
+            me->session_check = false;
+            me->session_reused = false;
+#if (MODEM_COMPONENT_TRACE_ENABLE != 0U)
+            {
+                char line[48];
+                (void)snprintf(line, sizeof(line), "session check state=%ld -> %s",
+                               (long)state, (state == 5) ? "keep" : "rebuild");
+                MODEM_TRACE(me, line);
+            }
+#endif
+            if (state != 5) {
+                failPlan(me, MODEM_FAILURE_RESPONSE);
+            }
+            break;
+        }
         default:
             break;
     }
@@ -1746,6 +1723,12 @@ static void readyLoop(ModemComponent *me, uint32_t now) {
         handleDownlink(me);
         return;
     }
+    /* 会话复核优先于任何上行，且**不受上行退避节流**（2026-10-14）：会话是否可用决定
+     * 后面每条命令有没有意义；一次心跳丢失/一条 8002 先查状态，能避免盲目重发 22 秒。 */
+    if (me->session_check) {
+        startRuntime(me, MODEM_RUNTIME_STATE, now);
+        return;
+    }
     /* NOTE (上行重试节流，2026-09-20)：失败的上行按 UPLINK_RETRY_MS 退避后再发。
      *   这里对整段运行期命令生效（上报、应答、小区、定位都让路）——它们本来就是
      *   周期性的，晚几秒没有代价，而提前重发只会把重试次数白白用光。 */
@@ -1754,7 +1737,9 @@ static void readyLoop(ModemComponent *me, uint32_t now) {
     }
     if (me->reply_pending) {
         startRuntime(me, MODEM_RUNTIME_REPLY, now);
-    } else if (me->report_requested) {
+    } else if (me->signal_requested) {
+        startRuntime(me, MODEM_RUNTIME_SIGNAL, now);
+    } else if (me->report_requested && me->report_enabled) {
         startRuntime(me, MODEM_RUNTIME_REPORT, now);
     } else if (me->cell_requested) {
         startRuntime(me, MODEM_RUNTIME_CELL, now);
@@ -1789,9 +1774,12 @@ void Modem_Component_Init(ModemComponent *me, ModemPort const *port,
     me->state = MODEM_COMPONENT_IDLE;
     me->failure = MODEM_FAILURE_NONE;
     me->report_enabled = true;
+    me->data.signal_quality = 99;
     me->sample_interval_min = MODEM_COMPONENT_SAMPLE_MIN;
     me->report_period_ms = (uint32_t)config->report_period_s * 1000U;
     me->cell_period_ms = (uint32_t)MODEM_COMPONENT_CELL_PERIOD_S * 1000U;
+    me->session_check = false;
+    me->state_step = 0U;
     ModemAt_Init(&me->at);
     buildTopics(me);
 }
@@ -1827,8 +1815,13 @@ void Modem_Component_Start(ModemComponent *me) {
     me->reply_pending = false;
     me->runtime_op = MODEM_RUNTIME_NONE;
     me->report_requested = false;
+    me->report_frozen = false; me->report_result_available = false;
+    me->signal_requested = false;
     me->cell_requested = false;
     me->location_requested = false;
+    /* 在线期会话复核状态也要清：新一次连接从零开始（2026-10-14）。 */
+    me->session_check = false;
+    me->state_step = 0U;
     me->uplink_retry = 0U;
     me->uplink_retry_at_ms = 0U;
     me->recover_phase = 0U;
@@ -1861,9 +1854,20 @@ void Modem_Component_Process(ModemComponent *me) {
 }
 
 void Modem_Component_RequestReport(ModemComponent *me) {
-    if (me != (ModemComponent *)0) {
-        me->report_requested = true;
+    if (me != (ModemComponent *)0 && !me->report_requested) {
+        me->report_requested = true; me->report_frozen = false;
+        me->report_payload[0] = '\0';
+        me->signal_requested = true;
     }
+}
+
+void Modem_Component_RequestSignal(ModemComponent *me) {
+    if (me != (ModemComponent *)0) { me->signal_requested = true; }
+}
+char const *Modem_Component_TakeReportResult(ModemComponent *me, bool *success) {
+    if (!me->report_result_available || success == (bool *)0) { return (char const *)0; }
+    *success = me->report_success; me->report_result_available = false;
+    return me->report_payload;
 }
 
 void Modem_Component_RequestCellInfo(ModemComponent *me) {

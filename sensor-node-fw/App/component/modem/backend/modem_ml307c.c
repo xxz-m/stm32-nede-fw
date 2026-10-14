@@ -613,7 +613,11 @@ ModemBackend const Modem_Ml307c_Backend = {
     ml307cCellBuild,
     ml307cCellApply,
     ml307cLocationBuild,
-    ml307cLocationApply
+    ml307cLocationApply,
+    /* NOTE (会话健康通知未实现)：ML307C 的 MQTT 会话类 URC 未在本工程上板核对过，
+     * 留空即表示不启用该机制（核心只在钩子非空时才做在线期复核）。 */
+    (ModemSessionNotice (*)(char const *))0,
+    (int32_t (*)(char const *))0
 };
 
 #endif /* MODEM_COMPONENT_BACKEND == MODEM_BACKEND_ML307C */

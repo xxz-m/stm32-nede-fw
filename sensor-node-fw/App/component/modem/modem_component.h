@@ -69,6 +69,8 @@ typedef struct {
     int32_t lon_e6;            /* 经度，1e-6 度（WGS-84）                        */
     int32_t lat_e6;            /* 纬度，1e-6 度（WGS-84）                        */
     bool location_valid;       /* true 表示本次上报带坐标                        */
+    uint16_t battery_mV;        /* 电池电压，毫伏。                              */
+    bool battery_valid;         /* true 才允许发布电池属性，避免失败值污染云端。  */
 } ModemMeasurements;
 
 /*--------------------------------------------------------------- 状态与失败 */
@@ -108,8 +110,22 @@ typedef enum {
     MODEM_RUNTIME_REPLY,    /* 发布一条命令应答 */
     MODEM_RUNTIME_REPORT,   /* 发布一条周期数据 */
     MODEM_RUNTIME_CELL,     /* 查一次小区信息   */
-    MODEM_RUNTIME_LOCATION  /* 查一次基站定位（后端不支持则不发命令） */
+    MODEM_RUNTIME_LOCATION, /* 查一次基站定位（后端不支持则不发命令） */
+    MODEM_RUNTIME_SIGNAL,   /* 上报前刷新 CSQ，复用后端连接计划。 */
+    /*! 会话复核：查一次 `AT+MQTTSTAT?`（复用后端计划里的 MQTT_STATE 步）。
+     *  NOTE (2026-10-14)：在线期收到会话风险通知（如 `+MQTTTO:5` / `+CME ERROR:8002`）
+     *  时先查状态：状态 5 且模组配置与当前身份一致才算会话可用，否则判链路失效并
+     *  **重建会话（含重新订阅全部主题）**。 */
+    MODEM_RUNTIME_STATE
 } ModemRuntimeOp;
+
+/*! 新云端命令：完整解析后才交付App，缓冲大小统一取配置宏。 */
+struct ModemCommandRequest {
+    char id[MODEM_COMPONENT_DOWNLINK_ID_MAX];
+    char command[MODEM_COMPONENT_DOWNLINK_COMMAND_MAX];
+    char data[MODEM_COMPONENT_DOWNLINK_DATA_MAX];
+    bool has_data;
+};
 
 /*--------------------------------------------------------------- 组件实例 */
 /*! 全部缓冲都是实例内的静态数组：不使用动态内存，也不跨层传递缓冲所有权。 */
@@ -171,13 +187,24 @@ typedef struct {
      * NOTE (为什么由组件拆包、由 App 执行)：本组件不许访问参数存储或 QP，
      *   所以它只把 `id` 与 `command` 两个字段原样取出来交给 App；执行与结果
      *   由 App 层用统一命令分发器完成，再经 CompleteCommand() 回到这里发布。 */
-    char downlink_id[MODEM_COMPONENT_DOWNLINK_ID_MAX];
-    char downlink_command[MODEM_COMPONENT_DOWNLINK_COMMAND_MAX];
+    struct ModemCommandRequest downlink;
     bool downlink_pending;   /*!< true = 有一条待 App 执行的命令 */
 
     /* --- 运行期状态 --- */
     ModemRuntimeOp runtime_op;
     bool report_requested;
+    bool signal_requested;
+    uint8_t signal_step;
+    uint32_t signal_revision;
+    /** 在线期会话复核请求（2026-10-14）：由会话风险通知置位，复核后清零。
+     * @note 只查一次状态：`AT+MQTTSTAT?` 的解析复用计划里的 MQTT_STATE 步。 */
+    bool session_check;
+    uint8_t state_step;     /* MQTT_STATE 步在计划里的下标（复核时复用） */
+    bool report_frozen;
+    bool report_result_available;
+    bool report_success;
+    /* 发布与重试使用同一份不可变 JSON；数据更新与下行拆包不能覆盖它。 */
+    char report_payload[MODEM_COMPONENT_PAYLOAD_MAX];
     bool cell_requested;
     bool location_requested;
     /* NOTE (2026-09-29 删掉 `sequence`)：它原来只服务于报文里的 `"seq":N`，而平台定的
@@ -212,6 +239,11 @@ void Modem_Component_Process(ModemComponent *);
 /** @brief 请求尽快上报一次数据（下个 Process 周期发出）。 */
 void Modem_Component_RequestReport(ModemComponent *);
 
+/** @brief 请求刷新信号；离线由调用者等待在线后再请求。 */
+void Modem_Component_RequestSignal(ModemComponent *);
+/** @brief 取一次发布终态，返回实际尝试的 JSON；失败也可消费，指针只短期有效。 */
+char const *Modem_Component_TakeReportResult(ModemComponent *, bool *success);
+
 /** @brief 请求查一次小区信息（下个 Process 周期发出）。 */
 void Modem_Component_RequestCellInfo(ModemComponent *);
 
@@ -224,36 +256,11 @@ void Modem_Component_RequestLocation(ModemComponent *);
 bool Modem_Component_IsReady(ModemComponent const *);
 
 /*------------------------------------------------ 云端 AT 命令下行（平台规则） */
-/** @brief 取走一条待执行的云端 AT 命令（`command` 主题）。
- *
- * @param me              组件实例
- * @param id              出参：平台关联 ID（必须原样回显），可为 NULL
- * @param idCapacity      id 的容量
- * @param command         出参：AT 命令文本（**不含** CR/LF），可为 NULL
- * @param commandCapacity command 的容量
- * @return true = 取到一条命令并已清空待办标志；false = 当前没有待办命令
- *
- * @note 由 App 层在每次 `Modem_Component_Process()` 之后轮询调用。组件不会自己执行
- *       命令（它不认识参数存储，也不允许依赖 QP）；执行完必须调用
- *       `Modem_Component_CompleteCommand()` 回一条应答，否则平台侧会一直等。
- * @note 缓冲不够时命令被丢弃并返回 false（平台允许 256 字节，本设备行上限见
- *       `MODEM_COMPONENT_DOWNLINK_COMMAND_MAX`），此时 App 应回失败应答。
- */
-bool Modem_Component_TakeCommand(ModemComponent *me,
-                                 char *id, size_t idCapacity,
-                                 char *command, size_t commandCapacity);
+/** @brief 按值取走一条已校验的JSON命令，执行由App完成。 */
+bool Modem_Component_TakeCommand(ModemComponent *me, struct ModemCommandRequest *request);
 
-/** @brief 发布一条 `command/reply`（平台规则 3.3 / 3.4）。
- *
- * @param me  组件实例
- * @param id  平台关联 ID，原样回显
- * @param ok  true = 成功回复（`ok:true` + `data`）；false = 失败回复（`ok:false` + `error` + `data`）
- * @param raw 完整原始 AT 回复文本（含行尾；成功必须以 `OK\r\n` 结尾，失败必须以 `ERROR\r\n` 结尾）
- *
- * @note JSON 拼装（含转义）在组件内完成：App 只提供语义，不碰报文格式。
- *       报文必须是单层 JSON，字段固定为 `id` / `ok` / `error` / `data`。
- */
-void Modem_Component_CompleteCommand(ModemComponent *me, char const *id, bool ok,
-                                     char const *raw);
+/** @brief 寄存器应答仅id/data，基础命令另回显command；已排队结果不可覆盖。 */
+void Modem_Component_CompleteCommand(ModemComponent *me, char const *id,
+                                     char const *command, char const *raw);
 
 #endif /* MODEM_COMPONENT_H */

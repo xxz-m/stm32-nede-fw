@@ -74,6 +74,7 @@ function Get-CFileXml([string]$full, [string]$indent) {
 }
 
 $text = [System.IO.File]::ReadAllText($Project)
+$originalText = $text
 $changed = $false
 $report = @()
 
@@ -186,7 +187,9 @@ foreach ($g in $groupDefs) {
     $report += ('已重建分组：' + $g.name + '（' + $g.files.Count + ' 个文件）')
 }
 if ($added -gt 0) {
-    $closeIdx = $text.LastIndexOf('</Groups>')
+    # 固定结束标记缩进，并在缩进前插入，避免重复运行时首组缩进来回变化。
+    $text = [regex]::Replace($text, '\s*</Groups>', "`r`n      </Groups>")
+    $closeIdx = $text.LastIndexOf('      </Groups>')
     if ($closeIdx -lt 0) { throw '未找到 </Groups> 结束标记' }
     $text = $text.Insert($closeIdx, $xml)
     $changed = $true
@@ -223,6 +226,15 @@ if ($binTouched -gt 0) {
 }
 
 # ---------------------------------------------------------------------- 写回
+# NOTE (工程换行)：源工程可能被编辑器改为 LF；统一 CRLF，避免与新插入段混用。
+$crlfText = $text -replace "\r?\n", "`r`n"
+if (-not [string]::Equals($crlfText, $text, [StringComparison]::Ordinal)) {
+    $text = $crlfText
+    $changed = $true
+    $report += '已统一工程文件换行为 CRLF'
+}
+# 分组重新计算不代表文件真的改变；按字节对应的字符串内容决定是否写回。
+$changed = -not [string]::Equals($originalText, $text, [StringComparison]::Ordinal)
 if ($changed) {
     [System.IO.File]::WriteAllText($Project, $text, (New-Object System.Text.UTF8Encoding($false)))
     Write-Output '--- 已修改工程文件 ---'

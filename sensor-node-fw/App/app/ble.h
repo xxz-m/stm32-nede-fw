@@ -17,8 +17,13 @@ typedef struct {
     int32_t angle_x_cdeg;     /* X 轴倾角，0.01°   */
     int32_t angle_y_cdeg;     /* Y 轴倾角，0.01°   */
     int32_t angle_z_cdeg;     /* Z 轴倾角，0.01°   */
+    bool valid;              /* false 为本轮采样失败，不得发送历史值。 */
+    uint16_t battery_mV;
+    bool battery_valid;
 } BleMeasurementEvt;
 
+typedef struct { QEvt super; int32_t signal; } BleSignalEvt;
+void Ble_RequestAdvertising(void);
 void Ble_ctor(void);
 void Ble_start(void);
 void Ble_uartRxIsrSink(void);

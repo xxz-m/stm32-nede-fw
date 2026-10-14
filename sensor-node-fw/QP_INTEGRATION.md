@@ -116,7 +116,7 @@ QP/C 6.9.1 的 `arm-cm` 端口是 ARM Compiler 5 时代的代码，直接用 arm
 3. **Flash 下载算法**：CubeMX 生成的工程里 `<FlashDriverDll>` 是空的，第一次打开请到 `Options for Target → Debug/Utilities → Settings → Flash Download` 里确认有 `STM32F10x_512`（256 KB 档）。
 4. **宏定义**：`C/C++ → Define` 应为 `USE_HAL_DRIVER,STM32F103xE,QV_PRJ`。
 5. **头文件路径**：应包含 `../App/app`、`../App/bsp`、`../Qpc/platform/inc`、`../Qpc/port/qv/inc`（脚本按磁盘实际目录自动重建，通常无需手改）。
-6. 编译后下载运行，串口 115200 应看到标准横幅、`actors` 与 `boot ok`，随后出现 1 Hz 采样和 2 s 心跳；发送 `AT` 加 CR/LF 应收到 `ok`。
+6. 编译后下载运行，串口 115200 应看到标准横幅、`actors` 与 `boot ok`，默认无1Hz采样与2s心跳；4G首次上线或分钟周期到期先采后发，模组确认后打印`cloud> sent`；发送`AT`加CR/LF应收到`OK`，按键还需验证120s蓝牙广播窗口。
 
 ## 九、后续可以继续加的东西
 
@@ -159,3 +159,11 @@ powershell -NoProfile -ExecutionPolicy Bypass -File App\tools\apply_qp_to_keil.p
 另外我在 `MDK-ARM/` 下放了一个**空文件 `project.uvmpw`**：ST 社区有人反馈，存在这个文件时 CubeMX 再生成不会清掉 Keil 工程里手工添加的文件/分组。属于社区经验（不是 ST 官方文档承诺），值得一试——生效的话你连脚本都不用跑，不生效就用脚本兜底。**无论哪种情况，`App/` 和 `Qpc/` 里的代码都不会丢。**
 
 如果你接下来还要加第 2、3 条约束，直接说，我按同样的原则处理：能靠 `.ioc` 配置的就不改生成代码，必须改生成文件的只动 USER CODE 区，其余一律放进 `App/`。
+
+## 电池 ADC 再生成说明（2026-10-12）
+
+PC1 默认模拟输入（高阻）、PC0=ADC1_IN10 与 ADCPCLK2_DIV6=12MHz 已写入 `.ioc`。当前运行期 ADC/开关由 `App/bsp/bsp_adc.*` 初始化，未手改生成的 Core 或 HAL，也不依赖 HAL_ADC 模块开关。内部 VREFINT 通道由 BSP 按需开启，完成作业后关闭 ADC/VREFINT。
+PB15 按键已登记为 `GPIO_Input`、`GPIO_NOPULL`（外部硬件上拉）。运行期由 `bsp_gpio.*` 初始化，Driver 仅做消抖；App 复用 Modem 的周期事件扫描并映射业务信号，未新增 Core 修改或 EXTI。新增源文件后运行工程恢复脚本，再执行 `button_test.ps1` 与 Keil L1。
+CubeMX 再生成时可能生成 ADC 初始化文件；保留生成流程，运行期仍由 BSP 在启动后登记并管理电池 ADC，禁止同时从其他 AO 发起 ADC1 事务。跑 `apply_qp_to_keil.ps1` 自动同步新增 Driver/BSP 文件及中文 BOM，检查 XML/缺失引用，再做 L1 编译和 L5 测量。
+
+恢复脚本写回前统一 `.uvprojx` 为 CRLF；即使原工程已有混合换行也会修正。验证时重复执行两遍，第二遍应显示「无需修改」，再检查 XML 与引用缺失数。

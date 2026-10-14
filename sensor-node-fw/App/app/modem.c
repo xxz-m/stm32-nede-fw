@@ -7,8 +7,9 @@
 *     Modem_Component_Process()，由组件内部按期限推进 AT 命令；
 *   - MODEM_RX_SIG：模组串口（`APP_CFG_MODEM_UART_ID` 指定的那一路）收到字节时由
 *     BSP 的 sink 投递，再调一次 Process 尽快吃掉；
-*   - MODEM_MEASUREMENT_SIG：AO_Sensor 的采样快照，只更新组件里的数据字段。
-* 三种事件都只做「喂进去 + 立刻返回」，没有任何就地等待。
+*   - MODEM_MEASUREMENT_SIG：AO_Sensor 的采样快照，只更新组件里的数据字段；
+*   - SYS_REPORT_REQUEST_SIG：所有业务来源的统一采样上报请求，最多保留一条待发。
+* 各类事件都只做「喂进去 + 立刻返回」，没有任何就地等待。
 *===========================================================================*/
 #include "modem.h"
 /* NOTE (顺序)：app_config.h 必须先于守卫被包含，否则 APP_CFG_MODEM_ENABLE 未定义、
@@ -25,9 +26,16 @@
 #include "app_command.h"
 #include "bsp.h"
 #include "command_dispatch.h"
+#include "app_register.h"
+#include "cloud_command.h"
 #include "modem_component.h"
 #include "store.h"
 #include "svc_log.h"
+#include "modem_report.h"
+#include "report_period.h"
+#include "drv_button.h"
+#include "sensor.h"
+#include "ble.h"
 
 #include <string.h>
 
@@ -40,6 +48,12 @@ typedef struct {
     ModemComponent component;
     ModemPort port;
     ModemConfig config;
+    DrvButton button;
+    ModemReportRequest manualReport;
+    AppRegisterSnapshot registers;
+    bool measurementValid;
+    bool samplePending;
+    uint32_t signalRevision; /* 信号查询完成序号，用事件通知蓝牙最新 CSQ。 */
     uint32_t reportTicks;    /* 距离下次周期上报的 Process 计数 */
     uint32_t cellTicks;      /* 距离下次查小区信息的 Process 计数 */
     uint16_t retryTicks;     /* 失败后距重连的 Process 计数     */
@@ -56,6 +70,32 @@ typedef struct {
 static Modem l_modem;
 QActive * const AO_Modem = &l_modem.super;
 static QEvt const *l_queue[12];
+/** @brief 投递采样请求，不调用另一个 AO 的状态机。 */
+static void requestMeasurement(Modem *me) {
+    if (!me->samplePending && Sensor_RequestSample(SENSOR_TARGET_CLOUD)) {
+        me->samplePending = true;
+        me->measurementValid = false;
+    }
+}
+/** @brief 消费组件终态；成功打印实际冻结的 JSON，失败不打印测量数据。 */
+static void consumeComponentResult(Modem *me) {
+    bool success;
+    char const *json = Modem_Component_TakeReportResult(&me->component, &success);
+    if (json != (char const *)0) {
+        if (success) {
+            LOG_WRITE("cloud> sent "); LOG_WRITE(json); LOG_WRITE("\r\n");
+        } else { LOG_W("modem: publish failed reason=%u", (unsigned)me->component.failure); }
+    }
+#if APP_CFG_BLE_ENABLE != 0U
+    if (me->signalRevision != me->component.signal_revision) {
+        BleSignalEvt *evt = Q_NEW(BleSignalEvt, SYS_BLE_SIGNAL_SIG);
+        me->signalRevision = me->component.signal_revision;
+        evt->signal = me->component.data.signal_quality;
+        QACTIVE_POST(AO_Ble, &evt->super, me);
+    }
+#endif
+}
+
 static QState active(Modem * const me, QEvt const * const e);
 
 /* 时间参数统一由毫秒配置换算成 Process 周期数，避免散落裸数字。 */
@@ -85,19 +125,12 @@ static QState active(Modem * const me, QEvt const * const e);
  *   外部写坏。这里兜底，保证换算出的节奏永远是 1~20 分钟。
  */
 static uint32_t reportIntervalMin(void) {
-    uint32_t minutes = 0U;
-
-    if (!SVC_Param_TextToU32(App_Store_Value(SVC_PARAM_TRANSINTVL), &minutes) ||
-        (minutes < (uint32_t)APP_CFG_MODEM_TRANS_INTERVAL_MIN) ||
-        (minutes > (uint32_t)APP_CFG_MODEM_TRANS_INTERVAL_MAX)) {
-        return (uint32_t)APP_CFG_MODEM_TRANS_INTERVAL_DEFAULT;
-    }
-    return minutes;
+    return App_ReportPeriod_Minutes();
 }
 
 /** @brief 上报间隔换算成 Process 周期数（至少 1 拍：算出 0 会变成每拍都上报）。 */
 static uint32_t reportIntervalTicks(void) {
-    uint32_t ticks = MODEM_PERIOD_TICKS(reportIntervalMin() * 60000U);
+    uint32_t ticks = MODEM_PERIOD_TICKS(App_ReportPeriod_Milliseconds());
 
     return (ticks == 0U) ? 1U : ticks;
 }
@@ -187,90 +220,14 @@ static void logReady(Modem *me) {
           (me->component.data.cell_id[0] != '\0') ? me->component.data.cell_id : "-");
 }
 
-/** @brief 执行一条来自云端的 AT 命令，并把结果交回组件发布。
-*
-* 这是「串口与 4G 共用同一套命令语义」的 4G 侧落点：命令文本**不另写解析**，
-* 而是逐字节喂进 Service 层的 `SVC_At_Feed()`，拿到 `SvcAtCmd` 后走同一个
-* `App_Command_Dispatch()`。因此 4G 与串口对 `AT+SN?` 的理解、错误码、响应文本
-* 完全一致，新增命令只需要改 `command_dispatch.c` 一处。
-*
-* NOTE (不做就地等待)：本函数只跑一次「解析 + 分发」，两个动作都不访问总线
-*   （读参数走 RAM 影子，写参数只置 dirty 由 AO_Store 异步落盘），所以不会拖住 QV。
-*
-* NOTE (失败文本，平台规则 3.4)：平台只认以最终 `ERROR\r\n` 结尾的失败回复，而本设备
-*   的失败形态是 `+CME ERROR:<n>\r\n`（V.250 里它本身就是最终结果码）。两者不冲突：
-*   规则 4.2 允许「可选错误行 + ERROR」，所以这里把 `+CME ERROR:<n>` 当详细行、
-*   再补一行 `ERROR` 收尾。**这一步只发生在 4G 回包上，串口输出保持原样。**
-*/
+/** @brief 云端仅开放基础命令与新寄存器接口，诊断参数命令保留在串口。 */
 static void serveDownlinkCommand(Modem *me) {
-    char id[APP_CFG_MODEM_DOWNLINK_ID_SIZE];
-    char text[APP_CFG_MODEM_DOWNLINK_COMMAND_SIZE];
-    char raw[SVC_AT_RESP_MAX + 8U];
-    SvcAt at;
-    SvcAtCmd cmd;
-    AppCommandRequest request;
+    struct ModemCommandRequest wire;
     AppCommandResult result;
-    size_t index;
-    size_t length;
-    bool parsed;
-    bool ok;
-
-    if (!Modem_Component_TakeCommand(&me->component, id, sizeof(id),
-                                     text, sizeof(text))) {
-        return;
-    }
-
-    /* 与串口同一条路：先逐字节累积，再用一个行结束符触发解析。
-     * 平台规则第 1 条保证 `command` 里不带 CR/LF，所以这里自己补 '\r'。 */
-    SVC_At_Init(&at);
-    for (index = 0U; (text[index] != '\0') && (index < sizeof(text)); ++index) {
-        (void)SVC_At_Feed(&at, (uint8_t)text[index], &cmd);
-    }
-    parsed = SVC_At_Feed(&at, (uint8_t)'\r', &cmd);
-
-    if (!parsed) {
-        /* 认不出来的命令（拼错、缺 `AT` 前缀、超长被行缓冲丢弃）：回失败应答。
-         * NOTE (凭据纪律，AGENTS.md 4.2)：这里**只打关联 ID，不打命令原文**——
-         *   云端命令可能是 `AT+PIN="…"`，原样打日志等于把凭据写进串口历史。 */
-        LOG_W("modem: cloud command not recognised, id=%s", id);
-        Modem_Component_CompleteCommand(&me->component, id, false, "ERROR\r\n");
-        return;
-    }
-
-    (void)memset(&request, 0, sizeof(request));
-    request.source = APP_COMMAND_SOURCE_MODEM;
-    request.command = cmd;
-    length = strlen(id);
-    if (length >= sizeof(request.correlation)) {
-        length = sizeof(request.correlation) - 1U;
-    }
-    (void)memcpy(request.correlation, id, length);
-    request.correlation[length] = '\0';
-    request.has_correlation = true;
-
-    if (!App_Command_Dispatch(&request, &result) || (result.raw[0] == '\0')) {
-        LOG_W("modem: cloud command reached no handler, id=%s", id);
-        Modem_Component_CompleteCommand(&me->component, id, false, "ERROR\r\n");
-        return;
-    }
-
-    ok = (result.status != APP_COMMAND_RESULT_ERROR);
-    if (ok) {
-        /* 成功也要留一行：否则「设备到底执行没执行」只能靠平台那侧看，排障时少一半证据。
-         * NOTE (凭据纪律)：只打关联 ID，不打命令原文、不打响应原文。 */
-        LOG_I("modem: cloud command done, id=%s", id);
-        Modem_Component_CompleteCommand(&me->component, id, true, result.raw);
-        return;
-    }
-
-    /* 失败：先原样带上设备自己的错误行，再补最终 ERROR（原本已是 ERROR 时不重复） */
-    (void)memcpy(raw, result.raw, sizeof(result.raw));
-    if (strstr(raw, "ERROR\r\n") == (char *)0) {
-        (void)strncat(raw, "ERROR\r\n", sizeof(raw) - strlen(raw) - 1U);
-    }
-    LOG_W("modem: cloud command failed, id=%s err=%u", id,
-          (unsigned)result.error_code);
-    Modem_Component_CompleteCommand(&me->component, id, false, raw);
+    if (!Modem_Component_TakeCommand(&me->component, &wire)) { return; }
+    App_CloudCommand_Dispatch(&wire, &me->registers, &result);
+    Modem_Component_CompleteCommand(&me->component, wire.id, wire.command,
+                                    result.raw);
 }
 
 /** @brief 发起一次连接（首次启动与失败重连共用）。 */
@@ -278,7 +235,6 @@ static void connect(Modem *me) {
     me->component.data.tac[0] = '\0';
     me->component.data.cell_id[0] = '\0';
     me->component.data.location_valid = false;
-    me->reportTicks = 0U;
     me->cellTicks = 0U;
     me->retryTicks = 0U;
     me->failureLogged = false;
@@ -304,6 +260,22 @@ static QState active(Modem * const me, QEvt const * const e) {
                   (unsigned long)BSP_modemUartBaud());
             return Q_HANDLED();
         case MODEM_PROCESS_SIG: {
+            /* 连接等待与断电重连期间也处理按键，最多保留一次待发请求。 */
+#if (APP_CFG_BUTTON_ENABLE != 0U)
+            if (DRV_Button_Poll(&me->button)) {
+                /* 业务事件映射只在 App 层；以后换功能只替换此处目标和事件。 */
+                LOG_I("button: pressed");
+                (void)Modem_RequestReport();
+#if APP_CFG_BLE_ENABLE != 0U
+                Ble_RequestAdvertising();
+#endif
+            }
+#endif
+            /* 离线也按参数周期采集，待发快照最多保留一份。 */
+            if (App_Store_ConfigResolved() && identityUsable() && me->component.report_enabled &&
+                (++me->reportTicks >= reportIntervalTicks())) {
+                if (Modem_RequestReport()) { me->reportTicks = 0U; }
+            }
             /* NOTE (断电重启，2026-09-20)：连不上时给模组彻底掉电再上电——这是唯一能
              *   清掉「掉网后不再搜网」这类卡死状态的手段（实机实测：模组掉网后停在
              *   `+CEREG:2,0,,,` 十分钟，既不注册也不搜网，射频软复位也没救回来）。
@@ -350,6 +322,7 @@ static QState active(Modem * const me, QEvt const * const e) {
                 connect(me);
             }
             Modem_Component_Process(&me->component);
+            consumeComponentResult(me);
             /* 云端下行的 AT 命令（平台规则 3.2）在这里执行：组件只拆包，
              * 解析与分发都在本层，见 serveDownlinkCommand()。 */
             serveDownlinkCommand(me);
@@ -403,27 +376,14 @@ static QState active(Modem * const me, QEvt const * const e) {
                  * 而设备其实每 20 分钟才发一次。写它不会改变节奏（下一段代码说了算）。 */
                 me->component.sample_interval_min = reportIntervalMin();
                 logReady(me);
-                /* NOTE (连上后立刻上报一帧，2026-09-29)：以前第一帧要等满一个上报周期
-                 *   （`TRANSINTVL` 出厂默认 20 分钟），现场看到的是「4G 明明连上了，平台
-                 *   却半天没有数据」——分不清是链路没通、还是周期没到。上电先报一次当前值：
-                 *   平台立刻有卡片与折线，也让「数据是不是新的」有了明确起点。
-                 * NOTE (把计数归零)：保证下一帧仍从此刻起算一个**完整**周期，这次额外汇报
-                 *   不会把后续节奏提前。
-                 * NOTE (尊重停报开关)：平台用可写属性 `report_enabled` 临时停报时，
-                 *   这里同样不发——否则「停报」在上电那一刻会被绕过。 */
+                /* 首次上线与重新上线先采再发，不发布组件的初始化缓存。 */
                 if (me->component.report_enabled) {
                     me->reportTicks = 0U;
-                    Modem_Component_RequestReport(&me->component);
+                    (void)Modem_RequestReport();
                 }
             }
-            /* 周期上报与小区信息刷新：只置请求位，真正的 AT 往返由组件在
-             * 下一个 Process 周期发起，AO 不等待。间隔每拍从参数影子取一次，
-             * 因此 `AT+TRANSINTVL=<n>` 改完立即生效（改小后下一拍就可能立即上报）。 */
-            if (me->component.report_enabled &&
-                (++me->reportTicks >= reportIntervalTicks())) {
-                me->reportTicks = 0U;
-                Modem_Component_RequestReport(&me->component);
-            }
+            me->component.sample_interval_min = reportIntervalMin();
+            App_ModemReport_TrySend(&me->manualReport, &me->component, me->measurementValid);
             if (++me->cellTicks >= MODEM_CELL_TICKS) {
                 me->cellTicks = 0U;
                 Modem_Component_RequestCellInfo(&me->component);
@@ -436,14 +396,41 @@ static QState active(Modem * const me, QEvt const * const e) {
         }
         case MODEM_RX_SIG:
             Modem_Component_Process(&me->component);
+            consumeComponentResult(me);
             serveDownlinkCommand(me);
+            return Q_HANDLED();
+        case SYS_MODEM_SIGNAL_REQUEST_SIG:
+            if (Modem_Component_IsReady(&me->component)) { Modem_Component_RequestSignal(&me->component); }
+            return Q_HANDLED();
+        case SYS_REPORT_REQUEST_SIG:
+            LOG_I("report: unified sample requested");
+            requestMeasurement(me);
             return Q_HANDLED();
         case MODEM_MEASUREMENT_SIG: {
             ModemMeasurementEvt const *snapshot = (ModemMeasurementEvt const *)e;
+            me->registers.temperature_cC = snapshot->temperature_cC;
+            me->registers.angle_cdeg[0] = snapshot->angle_x_cdeg;
+            me->registers.angle_cdeg[1] = snapshot->angle_y_cdeg;
+            me->registers.angle_cdeg[2] = snapshot->angle_z_cdeg;
+            memcpy(me->registers.acc_mg, snapshot->acc_mg, sizeof(me->registers.acc_mg));
+            me->registers.battery_mV = snapshot->battery_mV;
+            me->registers.battery_valid = snapshot->battery_valid;
+            me->registers.valid = snapshot->valid;
+            if (!snapshot->cloud_requested) { return Q_HANDLED(); }
+            me->samplePending = false;
+            me->measurementValid = snapshot->valid;
+            if (!snapshot->valid) {
+                me->manualReport.pending = false;
+                LOG_W("modem: fresh sample unavailable, report skipped");
+                return Q_HANDLED();
+            }
             me->component.data.temperature_cC = snapshot->temperature_cC;
             me->component.data.angle_x_cdeg = snapshot->angle_x_cdeg;
             me->component.data.angle_y_cdeg = snapshot->angle_y_cdeg;
             me->component.data.angle_z_cdeg = snapshot->angle_z_cdeg;
+            me->component.data.battery_mV = snapshot->battery_mV;
+            me->component.data.battery_valid = snapshot->battery_valid;
+            App_ModemReport_Request(&me->manualReport);
             return Q_HANDLED();
         }
         default:
@@ -491,11 +478,29 @@ void Modem_ctor(void) {
     BSP_modemUartInit(&me->port, (bsp_uart_id_t)APP_CFG_MODEM_UART_ID);
     me->port.trace = &componentTrace;
     Modem_Component_Init(&me->component, &me->port, &me->config);
+    me->measurementValid = false; me->samplePending = false; me->signalRevision = 0U;
+    memset(&me->registers, 0, sizeof(me->registers));
+    App_ModemReport_Init(&me->manualReport);
+#if (APP_CFG_BUTTON_ENABLE != 0U)
+    DRV_Button_Init(&me->button);
+#endif
 }
 
 void Modem_start(void) {
     QACTIVE_START(AO_Modem, APP_MODEM_PRIO, l_queue, Q_DIM(l_queue),
                   (void *)0, 0U, (QEvt *)0);
+}
+
+
+
+bool Modem_RequestReport(void) {
+    static QEvt const event = {(QSignal)SYS_REPORT_REQUEST_SIG, 0U, 0U};
+    return QACTIVE_POST_X(AO_Modem, &event, 0U, (void *)0);
+}
+
+void Modem_RequestSignal(void) {
+    static QEvt const evt = {(QSignal)SYS_MODEM_SIGNAL_REQUEST_SIG, 0U, 0U};
+    (void)QACTIVE_POST_X(AO_Modem, &evt, 0U, (void *)0);
 }
 
 #endif /* APP_CFG_MODEM_ENABLE != 0U */

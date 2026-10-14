@@ -21,6 +21,11 @@ static bool compactUuid(char const *source, char out[33]) {
     return used == 32U;
 }
 
+/* 手册 7.2.10：ADE 为广播使能，串口命令以 CRLF+NUL 结束。
+ * 只在状态变化时设置，不在每个周期重复写持久参数。 */
+char const *BLE_Backend_AdvertisingCommand(bool enabled) {
+    return enabled ? "AT+ADE=1\r\n" : "AT+ADE=0\r\n";
+}
 uint8_t BLE_Backend_CommandCount(void) { return 16U; }
 
 char const *BLE_Backend_Command(BleConfig const *cfg, uint8_t step,
@@ -31,7 +36,7 @@ char const *BLE_Backend_Command(BleConfig const *cfg, uint8_t step,
         case 1U: return "AT+BTM?\r\n\0";
         case 2U: return "AT+BTM=0\r\n\0";
         case 3U: return "AT+ADE?\r\n\0";
-        case 4U: return "AT+ADE=1\r\n\0";
+        case 4U: return "AT+ADE=0\r\n\0";
         case 5U: return "AT+NAM?\r\n\0";
         case 6U:
             n = snprintf(out, cap, "AT+NAM=%s\r\n%c", cfg->local_name, '\0');
@@ -100,7 +105,7 @@ bool BLE_Backend_ResponseMatches(BleConfig const *cfg, uint8_t step,
     char reversed[33];
     size_t i;
     if (step == 1U) return strstr(line, "+BTM:0") != (char const *)0;
-    if (step == 3U) return strstr(line, "+ADE:1") != (char const *)0;
+    if (step == 3U) return strstr(line, "+ADE:0") != (char const *)0;
     if (step == 5U) {
         (void)snprintf(expected, sizeof(expected), "+NAM:%s", cfg->local_name);
         return strstr(line, expected) != (char const *)0;

@@ -624,9 +624,6 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>::CMSIS</GroupName>
-        </Group>
-              <Group>
           <GroupName>App</GroupName>
           <Files>
             <File>
@@ -635,9 +632,29 @@
               <FilePath>../App/app/app.c</FilePath>
             </File>
             <File>
+              <FileName>app_register.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/app_register.c</FilePath>
+            </File>
+            <File>
+              <FileName>app_register_command.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/app_register_command.c</FilePath>
+            </File>
+            <File>
               <FileName>ble.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/app/ble.c</FilePath>
+            </File>
+            <File>
+              <FileName>ble_runtime.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/ble_runtime.c</FilePath>
+            </File>
+            <File>
+              <FileName>cloud_command.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/cloud_command.c</FilePath>
             </File>
             <File>
               <FileName>command_dispatch.c</FileName>
@@ -655,14 +672,29 @@
               <FilePath>../App/app/modem.c</FilePath>
             </File>
             <File>
+              <FileName>modem_report.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/modem_report.c</FilePath>
+            </File>
+            <File>
               <FileName>node.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/app/node.c</FilePath>
             </File>
             <File>
+              <FileName>report_period.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/report_period.c</FilePath>
+            </File>
+            <File>
               <FileName>sensor.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/app/sensor.c</FilePath>
+            </File>
+            <File>
+              <FileName>sensor_cycle.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/app/sensor_cycle.c</FilePath>
             </File>
             <File>
               <FileName>store.c</FileName>
@@ -735,6 +767,11 @@
               <FilePath>../App/service/svc_param.c</FilePath>
             </File>
             <File>
+              <FileName>svc_register.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/service/svc_register.c</FilePath>
+            </File>
+            <File>
               <FileName>svc_storage.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/service/svc_storage.c</FilePath>
@@ -748,6 +785,16 @@
               <FileName>drv_at24c04.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/driver/drv_at24c04.c</FilePath>
+            </File>
+            <File>
+              <FileName>drv_battery.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/driver/drv_battery.c</FilePath>
+            </File>
+            <File>
+              <FileName>drv_button.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/driver/drv_button.c</FilePath>
             </File>
             <File>
               <FileName>drv_scl3300.c</FileName>
@@ -780,9 +827,19 @@
               <FilePath>../App/bsp/bsp.c</FilePath>
             </File>
             <File>
+              <FileName>bsp_adc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/bsp/bsp_adc.c</FilePath>
+            </File>
+            <File>
               <FileName>bsp_ble_uart.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/bsp/bsp_ble_uart.c</FilePath>
+            </File>
+            <File>
+              <FileName>bsp_gpio.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/bsp/bsp_gpio.c</FilePath>
             </File>
             <File>
               <FileName>bsp_i2c.c</FileName>
@@ -820,6 +877,11 @@
               <FilePath>../App/component/ble/backend/ble_vg6328.c</FilePath>
             </File>
             <File>
+              <FileName>ble_advertising.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/component/ble/ble_advertising.c</FilePath>
+            </File>
+            <File>
               <FileName>ble_component.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/component/ble/ble_component.c</FilePath>
@@ -848,6 +910,11 @@
               <FileName>modem_at.c</FileName>
               <FileType>1</FileType>
               <FilePath>../App/component/modem/modem_at.c</FilePath>
+            </File>
+            <File>
+              <FileName>modem_command.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>../App/component/modem/modem_command.c</FilePath>
             </File>
             <File>
               <FileName>modem_component.c</FileName>
@@ -936,7 +1003,10 @@
             </File>
           </Files>
         </Group>
-</Groups>
+        <Group>
+          <GroupName>::CMSIS</GroupName>
+        </Group>
+      </Groups>
     </Target>
   </Targets>
 

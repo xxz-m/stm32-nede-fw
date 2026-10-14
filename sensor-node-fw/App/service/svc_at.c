@@ -201,7 +201,9 @@ static bool parseLine(char const *line, SvcAtCmd *out) {
         if (!copyValue(out->value, sizeof(out->value), eq + 1)) {
             return false;   /* 空值：整行无效，调用方回 ERROR */
         }
-        out->kind = SVC_AT_KIND_SET;
+        if (eqIgnoreCase(out->param, "read")) { out->kind = SVC_AT_KIND_REGISTER_READ; }
+        else if (eqIgnoreCase(out->param, "write")) { out->kind = SVC_AT_KIND_REGISTER_WRITE; }
+        else { out->kind = SVC_AT_KIND_SET; }
         return true;
     }
 

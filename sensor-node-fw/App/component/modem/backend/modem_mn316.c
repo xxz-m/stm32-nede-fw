@@ -882,24 +882,13 @@ static bool mn316PublishBuild(ModemComponent *me, ModemTopic topic, char const *
     used += strlen(&me->command[used]);
     me->command[used] = '"';
     me->command[used + 1U] = '\0';
-    /* NOTE (期望标记恒为 "OK"，2026-09-28 修 `#59`)：原实现按 QoS 选标记，
-     *   给 QoS 1 等 **`+MQTTPUBACK`**——而 MN316 **根本没有这个 URC**。按手册
-     *   `MN316_MQTT用户手册_V1.0.0.pdf`：
-     *     - §2.5 `AT+MQTTPUB`（第 14 页）：成功响应就是 `OK`，该小节**没有「URC 信息」栏**；
-     *       QoS 2 的推进靠 `+MQTTPUBREC` / `+MQTTPUBREL` / `+MQTTPUBCOMP`（外加 `+MQTTPUBLISH`）。
-     *     - 对照 §2.4 `AT+MQTTSUB`（第 13 页）有 `+MQTTSUBACK`、§2.6 `AT+MQTTUNSUB`（第 15 页）
-     *       有 `+MQTTUNSUBACK`——唯独发布没有，说明是模组设计如此，不是手册漏写。
-     *   后果（上板实测）：`command/reply` 等 4 条 QoS 1 主题**每条都等满超时**，
-     *   日志打 `runtime fail … rx="OK" reason=2`，消息其实已经发出去了，却被判失败并重发最多 4 份。
-     *
-     * NOTE (为什么这里可以用 "OK" 而查询步不行)：`ModemAt_LineHasToken()` 是子串匹配，
-     *   模组重启后会主动上报 `+NET: "OK"`，所以**查询类步骤**必须用精确标记（见 README 的
-     *   「查询类步骤一律用精确期望标记」）。发布这里没有更精确的标记可用（模组不提供 ACK URC），
-     *   只能接受 `OK`；即使被 `+NET: "OK"` 抢答，后果也只是"提前认为成功"——命令本身已经发出，
-     *   与"永远等不到标记 → 误判链路失效"相比是明显更轻的失败模式。
-     *
-     * NOTE (语义边界)：`OK` 只表示**模组已受理并发出**，不代表云端已处理（QoS 1 的重传由模组内部负责）。
-     *   要判"平台确实收到了"，只能从平台侧看，设备侧无法进一步确认。 */
+    /* NOTE (命令返回与服务器确认分开，2026-10-14核对手册纠正)：
+     *   §2.5第14页规定AT+MQTTPUB命令成功返回OK；§2.11第20页明确QoS1另有
+     *   +MQTTPUBACK:<packId>,<dup>，§3.2第22页也有+MQTTPUBACK:6,0的实例。
+     *   packId是MQTT包序号，dup=0为非重发、1为重发。旧注释称没有该URC是错误结论。
+     *   当前状态机仍以命令OK结束本次调用，没有关联packId等待Broker确认。
+     *   PUBACK表示Broker确认QoS1发布，不表示云端业务已经处理或历史记录可以删除。
+     *   属性上报当前QoS0、命令回复QoS1；本次仅纠正文档事实，不改变发送完成判据。 */
     return setExpected(expected, expectedSize, "OK");
 }
 
@@ -986,6 +975,48 @@ static bool mn316Recover(ModemComponent *me, uint8_t step) {
     return true;
 }
 
+/** @brief MQTT 会话健康通知（手册 §2.9 / §2.11 / §3.4，2026-10-14 加）。
+ *
+ * 判据全部来自手册原文，逐条对应：
+ *   `+MQTTREC:<n>`      —— §3.4 的重连序列：模组自己开始第 n 次重连（手册里是 0/1/2）。
+ *                          会话此时确定已丢，且 `clean=1` 下 broker 侧订阅也没了 → LOST。
+ *   `+MQTTDISC:OK`      —— §2.11 URC 表：模组已断开连接（重连不成时的收场）→ LOST。
+ *   `+MQTTTO:<type>`    —— §2.9：超时时间内没收到服务器 ACK；§2.11 字段表里 type 5 = ping。
+ *                          一次心跳丢失可能只是瞬时 → RISK（先查状态）。
+ *   `+CME ERROR:8002`   —— AT 命令手册 §11.1「操作不允许，通常为状态机不符合」。它可能是
+ *                          瞬时（计划表里 `AT+MQTTDEL` 就靠重试过去），但**在线期**出现它
+ *                          意味着 MQTT 客户端已不在可发布状态 → RISK（先查状态，别盲目重发）。
+ *                          实测正是这个码把「平台掉线 + 上行还能发」暴露出来的。
+ *
+ * NOTE (为什么这些行会走到这里)：`mn316UrcStarts()` 只把 `+MQTTPUBLISH:` 当通知，
+ *   其余行在在线期会被当成「空闲噪声」丢掉——所以必须由本钩子在丢掉之前先看一眼。 */
+static ModemSessionNotice mn316SessionNotice(char const *line) {
+    if ((strstr(line, "+MQTTREC:") != (char const *)0) ||
+        (strstr(line, "+MQTTDISC:") != (char const *)0)) {
+        return MODEM_SESSION_LOST;
+    }
+    if ((strstr(line, "+MQTTTO:") != (char const *)0) ||
+        (strstr(line, "+CME ERROR:8002") != (char const *)0)) {
+        return MODEM_SESSION_RISK;
+    }
+    return MODEM_SESSION_NONE;
+}
+
+/** @brief 从状态查询应答里解析 MQTT 会话状态（手册 §2.3：5 = 已连接）。
+ *  NOTE (为什么单独一个钩子，而不复用 apply())：`apply()` 对状态 5 还要求「模组里的
+ *   host/port/clientId 与当前身份一致」才置 `session_reused`，而那是**连接前**读回的
+ *   比对结果；会话刚被我们重建过（模组里原本是 `(null)`）时它必然为 false，用它判
+ *   在线会话会把好会话反复判死。在线期复核只看状态值本身。 */
+static int32_t mn316MqttState(char const *response) {
+    char const *cursor = afterMarker(response, "+MQTTSTAT:");
+    int32_t value = 0;
+
+    if ((cursor == (char const *)0) || (!ModemAt_NextInt(&cursor, &value))) {
+        return -1;
+    }
+    return value;
+}
+
 /** MN316 后端实现表。 */
 ModemBackend const Modem_Mn316_Backend = {
     "MN316",
@@ -1001,7 +1032,9 @@ ModemBackend const Modem_Mn316_Backend = {
     mn316CellBuild,
     mn316CellApply,
     (bool (*)(ModemComponent *, char *, size_t))0,   /* 未实现基站定位 */
-    (bool (*)(ModemComponent *))0
+    (bool (*)(ModemComponent *))0,
+    mn316SessionNotice,                              /* 会话健康通知（2026-10-14） */
+    mn316MqttState                                   /* 在线期会话复核用（2026-10-14） */
 };
 
 #endif /* MODEM_COMPONENT_BACKEND == MODEM_BACKEND_MN316 */

@@ -69,6 +69,8 @@
 typedef enum {
     SVC_AT_KIND_NONE = 0,   /*!< 没解析出命令（未识别 / 空行） */
     SVC_AT_KIND_PING,       /*!< AT                            */
+    SVC_AT_KIND_REGISTER_READ,  /*!< AT+READ="地址列表,CRC" */
+    SVC_AT_KIND_REGISTER_WRITE, /*!< AT+WRITE="地址,值,...,CRC" */
     SVC_AT_KIND_GET,        /*!< AT+<参数名>?                  */
     SVC_AT_KIND_SET,        /*!< AT+<参数名>="<值>"            */
     SVC_AT_KIND_TEST,       /*!< AT+<参数名>=?                 */

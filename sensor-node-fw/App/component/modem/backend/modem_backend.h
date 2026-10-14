@@ -106,6 +106,23 @@ typedef enum {
     MODEM_STEP_OPTIONAL_REPEAT
 } ModemStepMode;
 
+/*! 模组主动上报里与本组件「MQTT 会话是否还可用」有关的通知（2026-10-14 新增）。
+ *  动机与判据（MN316 MQTT 用户手册 V1.0.0，本机 `2.模块数据手册及资料/`）：
+ *    §2.9  `AT+MQTTTO=<n>` 设 ACK 超时；超时内没收到服务器 ACK 就上报 `+MQTTTO:<type>`；
+ *    §2.11 URC 表里 `<type>` 的取值写着 **5 = ping**（即 PINGREQ 没等到 PINGRESP）；
+ *    §3.4  的例子：连发三次 `+MQTTTO:5` 后模组开始自己重连 `+MQTTREC:0/1/2`，
+ *          再不成则 `+MQTTDISC:OK`。
+ *  NOTE (与下行通知分开)：`+MQTTREC`/`+MQTTTO` **不是**下行消息，不能走 urc_starts
+ *    那一套（那套要按主题把负载交给 App）；本通知只让核心去复核会话状态。
+ *  NOTE (为什么要分两档)：一次心跳超时或一条 `8002` 可能只是瞬时状态（`8002` 的手册
+ *    定义就是「通常为状态机不符合」，计划表里 `AT+MQTTDEL` 正是靠等一秒重试过去的），
+ *    所以先查状态再决定；而模组已经开始重连/断链时，会话确定已经丢了，直接重建。 */
+typedef enum {
+    MODEM_SESSION_NONE = 0,  /* 与会话健康无关的行                              */
+    MODEM_SESSION_RISK,      /* 会话有风险（心跳超时 / 状态不允许）：先复核状态  */
+    MODEM_SESSION_LOST       /* 会话已丢（模组在重连或已断链）：直接重建         */
+} ModemSessionNotice;
+
 /*! 计划中的一步。 */
 typedef struct {
     ModemOp op;
@@ -162,6 +179,26 @@ typedef struct {
     *   状态，也不清掉上一次取到的有效坐标；后端只需在解析成功时提交新的经纬度。 */
     bool (*location_build)(ModemComponent *me, char *expected, size_t expected_size);
     bool (*location_apply)(ModemComponent *me);
+
+    /** MQTT 会话健康通知（可选，2026-10-14 新增）。
+    * @note 为什么需要它：在线期会话可能**悄悄失效**（实测：平台显示掉线、上行还能发、
+    *   下行静默），而失败只会在下一次发布时以 `+CME ERROR:8002` 暴露。核心据此
+    *   **主动复核会话状态**，必要时整条重建——重建会重新走 DISC/DEL/CFG/OPEN 并
+    *   **重新订阅全部主题**，这正是「模组自己重连后订阅丢失」的补救路径。
+    * @note 调用时机：核心只在 READY（在线期）对**每一行**收到的文本调用它；连接计划期间
+    *   由 `MODEM_OP_MQTT_STATE` 的三态判定负责，不走本钩子。
+    * @note 留空（NULL）表示该后端没有实测过的会话通知，核心不启用该机制。 */
+    ModemSessionNotice (*session_notice)(char const *line);
+
+    /** 从状态查询应答里解析 MQTT 会话状态；解析不出来返回 -1。
+    * @note 只给**在线期会话复核**用。连接计划里的三态判定仍走 `apply()`——两者的口径
+    *   故意不同：计划里 0/1/2（未连接）算「可以继续重建」，而在线期复核只认 **5**。
+    * @note 为什么不能复用 `apply()`：`apply()` 对状态 5 还会要求「模组里的 host/port/
+    *   clientId 与当前身份一致」才置 `session_reused`，而那个比对是**连接前**读回来的；
+    *   会话刚由我们重建过（模组原本是空的 `(null)`）时它必然是 false，拿它判在线会话
+    *   会把好会话反复判死、陷入「重建 → 判死 → 再重建」。
+    * @note 留空（NULL）表示该后端不做复核，核心会直接清掉复核请求、不发查询。 */
+    int32_t (*mqtt_state)(char const *response);
 } ModemBackend;
 
 /** @brief 取当前编译进固件的后端实现表（由 modem_component.c 按宏选择）。 */

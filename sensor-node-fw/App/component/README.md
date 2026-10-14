@@ -2,9 +2,8 @@
 title: 可移植通信组件规范
 status: 进行中
 owner: 待填
-updated: 2026-09-29
+updated: 2026-10-14
 ---
-
 # 可移植通信组件规范
 
 `App/component/` 保存可跨 MCU、内核和具体通信芯片复用的通信能力。组件核心只能依赖标准 C 和自身 `port` 接口，禁止包含 HAL、CMSIS、QP、RTOS 头文件，禁止使用全局可变状态和动态内存。平台状态全部由调用者传入的实例与 `context` 持有。
@@ -90,10 +89,10 @@ params[2] = (BleParam){"signal_quality", "Signal quality", "%",
     {BLE_VALUE_INT, {.integer = 0}}, false, 0, 100, 0, 0};
 
 params[3] = (BleParam){"voltage", "Voltage", "mV",
-    {BLE_VALUE_INT, {.integer = 3300}}, false, 0, 5000, 0, 0};
+    {BLE_VALUE_INT, {.integer = 0}}, false, 0, 5000, 0, 0};
 
-params[4] = (BleParam){"sample_interval", "Sample interval", "s",
-    {BLE_VALUE_INT, {.integer = 60}}, true, 1, 86400,
+params[4] = (BleParam){"sample_interval", "Report interval", "min",
+    {BLE_VALUE_INT, {.integer = 20}}, true, 1, 20,
     sampleIntervalChanged, &product_context};
 
 BLE_Component_Init(&ble, &port, &product, params, 5U);
@@ -129,7 +128,7 @@ static int sampleIntervalChanged(char const *name,
     ProductContext *product = (ProductContext *)context;
     (void)name;
     product->report_period_ms =
-        (uint32_t)value->value.integer * 1000U;
+        (uint32_t)value->value.integer * 60000U; /* 示例参数单位为分钟。 */
     return 0;  /* 0 接受；非 0 拒绝这次 set */
 }
 ```
@@ -292,6 +291,35 @@ MN316 在清理 MQTT 客户端之前先发送 `AT+MQTTSTAT?`，并按手册（MQ
 
 `AT+MQTTDEL` 的 `+CME ERROR:8002` 在手册（AT 命令用户手册 §11.1，第 132 页）里的定义是「操作不允许，通常为状态机不符合」——是可等待的瞬时状态，因此计划表把它声明成 `MODEM_STEP_OPTIONAL_REPEAT`：按 `APP_CFG_MODEM_MQTT_TEARDOWN_RETRY_MS` 重试 3 次，用尽后继续下一步而不是判整条连接失败。相邻两条 AT 之间另有 `APP_CFG_MODEM_AT_GAP_MS` 的最小间隔，对应手册「只有前一个 AT 命令执行完毕，才能执行下一个 AT 命令」的要求。
 
+### 在线期会话复核（`session_notice()` / `mqtt_state()`，2026-10-14，`#138`）
+
+连接建立**不等于**一直可用。实测：发布成功 61 s 后模组报 `+MQTTTO:5`（手册 §2.9/§2.11，type=5 = ping 超时），紧接着 broker 在「最后收到报文 + 1.5×keepalive」把设备判离线——平台显示掉线，而设备侧上行还能发、**下行静默**，且设备日志里几乎看不出来（这些 URC 不是下行消息，空闲期会被当成噪声丢掉）。
+
+后端因此新增两个可选钩子，核心只在**在线期（READY）**使用它们：
+
+| 钩子 | 职责 | MN316 怎么看 |
+|---|---|---|
+| `session_notice(line)` | 每收到一行文本判一次会话健康 | `+MQTTREC:n` / `+MQTTDISC:OK` → `LOST`（直接重建）；`+MQTTTO:<type>` / 在线期的 `+CME ERROR:8002` → `RISK`（先复核）；其余 `NONE` |
+| `mqtt_state(response)` | 从状态查询应答里取状态值（-1 = 解析失败） | `+MQTTSTAT:<n>`，只有 **5** 算会话可用 |
+
+- `LOST` → 核心直接 `failPlan()`：AO 整条重建，重建路径即 **DISC/DEL/CFG/OPEN + 重新订阅全部主题**（这就是「模组自己重连后订阅丢失」的补救路线）。
+- `RISK` → 置 `session_check`，下一次推**优先**发 `AT+MQTTSTAT?`（复用计划里的 `MQTT_STATE` 步，运行期动作 `MODEM_RUNTIME_STATE`），状态不是 5 才重建。这样一次心跳丢失或一条 8002 不会立刻把链路判死，也不会盲目重发几十秒。
+- **为什么复核不沿用 `remote_cfg_matches`**：那个比对是连接**前**用 `AT+MQTTCFG?` 读回的，会话刚由我们重建过（模组里原本是 `(null)`）时必然为 false，拿它判在线会话会把好会话反复判死。
+- ML307C / NT26 的这两个钩子留空：它们的会话类 URC 尚未上板核对，核心在钩子为空时**不发查询、不做判断**（推荐里说明这是有意保守）。
+
+配套的配置改动：`APP_CFG_MODEM_KEEP_ALIVE_S` 由 60 s 提到 **300 s**。keepalive 小于上报周期（出厂默认 20 min）时，两次上报之间全靠模组 ping 保活，而 NB-IoT 上频繁 ping 最脆弱；提到 300 s 后数据报文自己即可保活，broker 容忍度也从 90 s 提到 7.5 min。
+
+### 订阅集合：只订 `command`（2026-10-14，`#139`）
+
+核心仍按 `kTopicDirection[]` 认识全部 10 条主题（名字、方向、QoS、发布路径都不变），但**给哪些主题分配订阅序号**由 `MODEM_COMPONENT_TOPIC_SUBSCRIBE_COMMAND_ONLY` 决定：
+
+| 开关 | 订阅集合 | 上板日志 |
+|---|---|---|
+| `1`（当前） | 只有 `/<productId>/<deviceId>/command` | `step 22/23 ok topic 1/1` |
+| `0`（原行为） | read / write / invoke / state-check / command 共 5 条 | `step 22/23 ok topic 1/5` … `5/5` |
+
+原因（现场实测）：订到第 2 条 `properties/write` 之后连接就被 broker 掐断，其后所有订阅与发布一律 `+CME ERROR:8002`（第 1 条 `properties/read` 能拿到 `+MQTTSUBACK`，第 2 条起再无应答）；而本工程对云端只暴露 `command` 一条下行通道。序号仍照常递增（只影响 NT26 的路由登记与日志 k/n），`topicTotal()/topicIssued()` 按 `subscribe_id != 0` 计数，所以跳过的主题不会被算进分母。
+
 ### 公网可达性探测（`netprobe`，2026-09-27）
 
 `+MQTTOPEN:FAIL` 的手册定义只有一句「连接服务器失败」，它**区分不了**两件结论完全相反的事：这张卡根本出不了公网（定向卡 / 策略拦截），还是只是连不上我们这台服务器。为此在 `AT+CGCONTRDP`（PDP）之后插入了四步**裸 TCP 探测**，用模组自带的 socket 能力去连一个**与业务无关**的公网地址：
@@ -342,48 +370,18 @@ AT+NSOCL=<id>                  → OK                 netprobe socket <id> close
 
 ### 平台 AT 命令下行（`command` / `command/reply`）
 
-2026-09-27 起按平台规则对接了一条新的下行通道：订阅 `{productId}/{deviceId}/command`，
-回复发布到 `{productId}/{deviceId}/command/reply`（**不带**前导 `/`，见下）。
+2026-10-14按用户确认的13号手册使用新JSON：请求id/command/data，寄存器回复只有id/data；基础AT/RST另回显command。当前主题宏均为前导 `"/"`，仍按每主题独立宏生成；原不带斜杠/旧ok外壳的实测仅代表历史版本。
 
-> [!warning] 前导 `/` **按主题逐条给**（2026-09-28 订正）
-> `buildTopics()` 的拼法是 `"%s%s/%s%s"`：**最前面那个 `/` 取自 `kTopicPrefix[]`**——一张
-> **一条主题一行**的表，表里每一行对应 `app_config.h` 里**一个宏**（`APP_CFG_MODEM_TOPIC_PREFIX_*`，共 10 个，
-> 只能填 `""` 或 `"/"`，有编译期护栏）；device 与后缀之间的 `/` 由 `kTopicSuffix[]` 自带。
-> **平台要求某一条换形态时，只改 `app_config.h` 那一行，不必碰组件代码。**
->
-> **当前取值**：**只有数据上报那一条**（`properties/report` → `/sensor-product/<did>/properties/report`）带 `/`；
-> 其余 9 条（5 条订阅 + 4 条应答，含 `command/reply`）**都不带**。
-> 依据是平台侧的**两个互不相干的主题空间**：数据上报页原文要求订阅 `/{productId}/{deviceId}/properties/report`（带 `/`）；
-> 命令交互（「AT 控制主题模板」「回复主题模板」）写的是 `{productId}/{deviceId}/…`（不带 `/`）。
->
-> **为什么不再"按方向"一刀切**：平台侧确实有两栏会各自变动，但**"方向"不是那件事的维度**——
-> `#58`→`#62` 就是因为把它当成"发布方向统一带 `/`"，给 `command/reply` 多加了一个 `/`：
-> 设备发 5 段主题、平台按 4 段过滤器认 → 平台上停在 `WAITING_RESPONSE`、20 s 判"指令超时"（**已实测**）。
-> 逐条成表后，平台单独要求某一条换形态时，只改 `kTopicPrefix[]` 里那一行。
->
-> 历史（别重复踩）：`#48` 把格式串由 `"/%s/%s/%s"` 改成 `"%s/%s%s"`，**顺带把 10 条主题的前导 `/` 全去掉了**
-> （`#48` 写「旧主题保持现网路由不变」，**是错的**，见 `#50`）；`#50`/`#51` 按当时实机现象记成「与当前平台一致」；
-> `#58` 一度改成全体带 `/`，`#60` 改为按方向用宏，`#64` 才收敛为**按主题**。
->
-> **改前缀必须与平台页面同步**：订阅串一旦与平台发布串对不上，下行命令会**静默**失效（`+MQTTSUBACK` 照样回来，表现为「设备在线、订阅齐全、平台发布无回应」）。
-> 上板要看的：`AT+MQTTSUBACK` 里的主题串，以及从平台发一条 `AT` 能否回 `{"id":…,"ok":true,"data":"OK\r\n"}`。
-
-组件在这条通道上**只做两件事**，不执行命令：
-
-| 步骤 | 谁做 | 说明 |
+| 步骤 | 模块 | 边界 |
 |---|---|---|
-| 拆包 | 组件 `dispatchDownlink()` | 用 `jsonStringUnescape()` 取出 `id` 与 `command`（转义感知：写参数命令自带引号，普通提取会在 `\"` 处截断），置 `downlink_pending` |
-| 取走 | App 层轮询 `Modem_Component_TakeCommand()` | 组件不认识参数存储，也不许依赖 QP，所以执行必须上交 |
-| 执行 | App 层（`AO_Modem`） | 命令文本喂 `SVC_At_Feed()` → `App_Command_Dispatch()`，与串口**完全同一条路** |
-| 回包 | 组件 `Modem_Component_CompleteCommand()` | 由它拼单层 JSON（含 `\r`/`\n`/`"`/`\` 转义）并排进上行队列 |
+| 严格JSON编解码 | 内部 `modem_command.c/h` | 已知字段、ASCII及合法转义；重复/超长/控制字符/尾随内容拒绝 |
+| 邮箱取走 | `Modem_Component_TakeCommand` | 按值复制完整ModemCommandRequest，组件不执行 |
+| 业务执行 | App的 `cloud_command.c` | 白名单AT/RST/READ/WRITE；寄存器走App_Register_Dispatch |
+| 回复 | `Modem_Component_CompleteCommand` | 转义新JSON、队列保存，不覆盖未发布应答 |
 
-应答格式按规则 3.3 / 3.4：成功是 `{"id":…,"ok":true,"data":"…OK\r\n"}`，失败是 `{"id":…,"ok":false,"error":"ERROR","data":"…ERROR\r\n"}`。`data` 是**完整原始 AT 回复**并按 JSON 转义；本设备的失败形态是 `+CME ERROR:<n>`，交给 App 层时会在它后面补一行 `ERROR` 收尾（规则 4.2 允许「可选错误行 + ERROR」）。
+id最多63字符，data最多52字符，读回复最多132字符。基本命令不用data，寄存器参数不能在command里拼成完整AT行。单邮箱已有请求/排队应答/应答在途时，所有新旧主题下行均不执行，避免互相覆盖。平台收到应答后再下发下一条。完整协议和当前阶段限制见 [[06-协议格式]]。
 
-> [!note] 主题拼装的两处 `/` 别弄混（2026-09-28 订正）
-> 拼法是 `"%s%s/%s%s"`：**最前面那个 `/` 来自 `kTopicPrefix[]`（按主题逐条给，命令通道不带）**；
-> product 与 device 之间的 `/` 是格式串里的分隔符；**device 与后缀之间的 `/` 由 `kTopicSuffix[]` 各自携带**——
-> **只改一处、另一处漏改，就会拼出「中间少一个斜杠」或「多一个前导斜杠」的错主题**，
-> 而模组对订阅照样回 `+MQTTSUBACK`，症状是"设备在线、订阅齐全、平台没反应"。
+怎么验证：`powershell -NoProfile -ExecutionPolicy Bypass -File sensor-node-fw/App/tools/register_test.ps1`，覆盖实际邮箱、App分发、回复、CRC及白名单；无线端L5另行执行。
 
 | 本工程配置 | 组件内部宏 | 含义 |
 |---|---|---|
@@ -442,7 +440,8 @@ MN316 是**标准 3GPP 系**模组（`+CPIN?` / `+CGATT?` / `+CGDCONT?` / `+CGPA
 | MQTT 订阅 | `AT+MQTTSUB="<主题>",<qos>,0` → `OK`，随后异步 `+MQTTSUBACK:<id>,<qos>,<主题>` | **期望标记必须用 `+MQTTSUBACK`**（代码就是这么写的）。不要图省事改成 `OK`：`OK` 只说明命令被受理，**不代表订阅真的成功了**——`#51` 就是因为只看 `OK` 而错过「订错主题」，白跑一整轮 |
 | 下行通知 | **2026-09-27 首次实测确认**：`+MQTTPUBLISH:<a>,<b>,<c>,<d>,<主题>,<负载字节数>,<负载>`，例如 `+MQTTPUBLISH:0,1,0,1,sensor-product/869413084698157/command,67,{"id":"…","command":"AT"}`（命令通道的主题**不带**前导 `/`，与 `kTopicPrefix[]` 当前对 `MODEM_TOPIC_COMMAND` 的取值一致） | `mn316UrcStarts/LocatePayload/UrcComplete` 三件套都是按这个形态写的，**名字与字段位置已对上真机**；负载按声明字节数收全（不按换行），因为负载里可能含换行 |
 | MQTT 操作超时 | 订阅迟迟没回 `+MQTTSUBACK` 时，模组会报 `+MQTTTO:<n>`（超时窗口由计划里的 `AT+MQTTTO=20` 设定） | 见到 `+MQTTTO:` 说明会话在超时，不是命令写错；`rx="OK|+MQTTTO:3"` + `reason=2` 就是这个场景 |
-| 上行发布 | `AT+MQTTPUB="<主题>",<qos>,0,0,<原长>,"<HEX>"` → **`OK`**（QoS 0/1/2 都是这一条），**负载是 HEX 编码** | `mn316PublishBuild()` 用 `ModemAt_HexEncode()`，改动时别把编码去掉。**期望标记恒为 `OK`**——手册 §2.5（第 14 页）写明成功响应就是 `OK`，且**没有 ACK 型 URC**（对照 §2.4 `+MQTTSUBACK`、§2.6 `+MQTTUNSUBACK`；发布的 QoS2 流程只有 `+MQTTPUBREC/REL/COMP`）。曾经按 QoS 选标记、给 QoS 1 等 `+MQTTPUBACK`，导致 4 条 `*/reply` 每条都超时（`#59`，2026-09-28 修） |
+| 会话心跳超时 | §2.11 URC 表 + `<type>` 字段表：`+MQTTTO:<type>` 的 **type=5 = ping**（PINGREQ 没等到 PINGRESP）。§3.4 例子：连发三次 `+MQTTTO:5` 后模组自己重连 `+MQTTREC:0/1/2`，再不成 `+MQTTDISC:OK` | `session_notice()` 把 `+MQTTTO:` 判为 `RISK`（先查状态），`+MQTTREC:`/`+MQTTDISC:` 判为 `LOST`（直接重建换重新订阅）。实测：发布成功 61 s 后出现 `+MQTTTO:5`，随后平台显示掉线，见 `#138` |
+| 上行发布 | `AT+MQTTPUB="<主题>",<qos>,0,0,<原长>,"<HEX>"`命令返回OK；QoS1另有`+MQTTPUBACK:<packId>,<dup>` | 负载仍HEX编码，当前状态机仍以命令OK收尾、未关联packId等Broker确认。手册§2.11第20页定义PUBACK，§3.2第22页有`+MQTTPUBACK:6,0`示例：6是包ID，0是非重发标志；Broker确认不代表平台业务处理完成。旧#59/#63及原注释“没有ACK URC”的结论已由#135纠正，历史记录保留。 |
 | 上行发布失败 | `AT+MQTTPUB` 失败回 `+CME ERROR:<err>` 或 `ERROR` | 引擎按 `ERROR`/`+CME` 判失败；**只有 `OK` 才算成功**，别再加别的期望标记 |
 | 基站定位 | `AT+LBSCFG` → `+CME ERROR: 4`，**本模组无此指令** | MN316 计划表里本来就没有 `MODEM_OP_LBS_MODE`（NT26 才有），且定位钩子为空 |
 | `AT+WORKLOCK` | 只支持写入（`AT+WORKLOCK=1` → OK），查询形式回 `+CME ERROR:8001` | 不要用 `AT+WORKLOCK?` 判状态 |
@@ -658,3 +657,19 @@ powershell -NoProfile -ExecutionPolicy Bypass -File sensor-node-fw\App\tools\smo
 ```
 
 上板还需逐项验证探测、广播、PIN+SN 认证、参数发现、读写、周期上报、NAK、断链清理和复位；无实测记录时不得标记 L5 通过。
+
+## 4G 电池属性（2026-10-12）
+
+`ModemMeasurements` 新增 `battery_mV` 与 `battery_valid`，仅由调用方提供，不在组件中访问 ADC/GPIO。有效时 `properties/report` 输出 `battery_voltage`（伏、三位小数），无效时省略；旧字段与 BLE 协议不变。可用 `App/tools/battery_test.ps1` 对真实组包器检查精度和无效值省略；平台物模型映射与 MQTT 实测仍待验证。
+
+## 请求式采样与完成通知（2026-10-12）
+
+产品App先取得本批测量再调用Report，认证首包不发占位值。BLE `voltage`为实测mV，无效时报告省略；`signal_quality`来自最近CSQ，未知99，产品BLE sample_interval通过注入changed回调修改Store的transintvl，单位min、范围1~20，改完即影响统一周期且异步落盘；组件本身不依赖Store或QP。BLE认证首采、按键、4G上线和周期到期均投递同一App上报事件，BLE不另开计时器。
+
+`BLE_Component_SetAdvertising()`记录目标，`ble_advertising.c`非阻塞发送`AT+ADE=0/1`，成功后才更新确认状态；忙则稍后再试，ERROR/+ERP/超时或端口故障有限重试。产品默认关闭广播，按键120s窗口由App持有。已连接时不往透传UART插入配置指令，窗口结束继续会话，断开后执行ADE=0；需L5确认关闭时延及是否短暂重新广播。初始化仍执行ADE=0与RST配置流程，不能保证模组原有持久ADE=1在初始化前完全不广播。
+
+依据用户本地VG6328AIP-PRO/PLUS规格书V1.0.0，§7.1（PDF11页）要求CRLF+NUL结尾、成功+OK/失败+ERP、设置持久保存；§7.2.10（PDF16~17页）定义ADE使能。只在目标改变时设置，避免每拍重复写入。手册未明确保证ADE运行期即时生效，主机测试只能验证收发与状态机，不能替代实机广播测试。
+
+`BLE_Component_TakeSentReport()`报告data帧交付UART队列，非手机ACK。Modem `RequestReport()`先刷新CSQ再冻结JSON到独立缓冲，重试不重组；`TakeReportResult()`单次取成功/失败终态，成功打印同一JSON，MN316依据发布命令OK，不代表平台业务ACK。首次连接完成不再自动发布初始化数据，由App新采样后请求。组件仍只依赖标准C和Port，不包含QP/HAL。新增配置`APP_CFG_BLE_ADVERT_WINDOW_MS/RETRY_MS/ATTEMPTS`分别为120000/1000/3，后两项映射为组件配置宏。
+
+验证：`powershell -NoProfile -ExecutionPolicy Bypass -File sensor-node-fw/App/tools/workflow_test.ps1`，以及电池、按键回归；硬件步骤见[[05-任务说明#PB15 按键触发一次上报]]。

@@ -66,11 +66,9 @@ typedef enum {
 /**
  * @brief 一条统一命令的执行结果。
  *
- * @note `raw` 是**已经格式化好的完整 AT 响应**（含行尾 `\r\n`；查询类响应末尾还有
- *       最终 `OK\r\n`）。串口把它原样写进异步日志队列，4G 把它当 `data` 包进
- *       `command/reply` JSON。两种来源因此共用同一份文本，不会出现「串口和 4G
- *       回的格式不一样」。容量取 `SVC_AT_RESP_MAX`，与串口调用方的响应缓冲同源，
- *       避免两处上限不一致。
+ * @note raw按来源适配：串口为完整AT响应；云端寄存器为纯负载或帧错误文本，
+ *       基础AT/RST为含CRLF的结果行。组件仅将raw作为JSON的data转义。
+ *       容量取SVC_AT_RESP_MAX，必须能容纳132字符寄存器回复及串口封装。
  */
 typedef struct {
     AppCommandResultStatus status;      /*!< 完成 / 进行中 / 失败 */

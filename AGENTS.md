@@ -50,14 +50,15 @@ E:\stm32\sensor-node-fw\
 │   ├── Core\                        CubeMX 生成（启动、中断、HAL 时基、外设初始化）
 │   ├── Drivers\                     STM32F1 HAL + CMSIS（厂商层）
 │   ├── App\                         ★ 自研代码，按分层建目录，CubeMX 不会动
-│   │   ├── app\        App 应用层：app.c（装配点 App_start）· command_dispatch.*（统一命令执行）· app_signals.h（信号分段）· app_prio.h（优先级）· node.*（控制台/AT 通道）· sensor.*（采样 AO）· ble.*（AO_Ble）· modem.*（AO_Modem）· store.*（AO_Store，掉电参数存储）
+│   │   ├── app\        App 应用层：app.c（装配点 App_start）· command_dispatch.*（统一命令执行）· app_signals.h（信号分段）· app_prio.h（优先级）· node.*（控制台/AT 通道）· sensor.*（采样 AO）· sensor_cycle.*（请求批采样）· ble_runtime.*（广播窗口与BLE采样周期）· ble.*（AO_Ble）· modem.*（AO_Modem）· modem_report.*（独立业务上报请求）· store.*（AO_Store，掉电参数存储）
 │   │   ├── app_command\ 可移植命令模型：app_command.h（来源、SvcAtCmd、关联 ID、统一结果）
 │   │   ├── service\    Service 服务层：svc_filter.*（中值/滑动平均）· svc_frame.*（CRC-16/组帧/解析）· svc_at.*（AT 解析）· svc_log.*（异步日志）· svc_param.*（参数记录编解码）
-│   │   ├── driver\     Driver 器件驱动层：drv_types.h（层公共状态码）· drv_scl3300.*（SCL3300-D01 三轴倾角仪，SPI/PA4/非阻塞）· drv_at24c04.*（AT24C04 非阻塞驱动）· drv_storage/drv_w25q32.*（SPI NOR 参数存储）
+│   │   ├── driver\     Driver 器件驱动层：drv_types.h（层公共状态码）· drv_scl3300.*（SCL3300-D01 三轴倾角仪，SPI/PA4/非阻塞）· drv_battery.*（PC0/PC1 电池分压采样）· drv_button.*（按键消抖，不含业务事件）· drv_at24c04.*（AT24C04 非阻塞驱动）· drv_storage/drv_w25q32.*（SPI NOR 参数存储）
 │   │   ├── component\  可移植通信组件：业务核心 + 可替换芯片后端，禁止依赖 HAL/QP/RTOS
 │   │   │                ble\（VG6328）与 modem\（ML307C/NT26/MN316 + 增量 AT 引擎）
 │   │   ├── bsp\        BSP 板级支持层：bsp.*（QP 钩子、时钟节拍）· bsp_uart.*（USART1 + 异步日志）· bsp_ble_uart.*（BLE 端口，实例由 APP_CFG_BLE_UART_ID 决定，当前 USART2）· bsp_modem_uart.*（4G 端口，实例由 APP_CFG_MODEM_UART_ID 决定，当前 USART3）· bsp_i2c.*（I2C1 非阻塞主机，参数存储用；I2C 中断使能与 IRQ 入口在本文件，不在 .ioc）
-│   │   └── tools\      工程与验证脚本（apply_qp_to_keil.ps1、smoke_build.ps1、at_smoke.ps1）
+│   │   │                bsp_gpio.*（PB15 按键输入；不包含消抖或业务）
+│   │   └── tools\      工程与验证脚本（apply_qp_to_keil.ps1、smoke_build.ps1、at_smoke.ps1、battery_test.ps1、button_test.ps1）
 │   ├── ThirdParty\     第三方库（<库名>/{inc,src,LICENSE,README.md}，见其 README.md）
 │   ├── Qpc\            QP/C 6.9.1 源码 + QV 端口（见其 README.md）
 │   ├── MDK-ARM\        Keil 工程（.uvprojx / .uvoptx / project.uvmpw）
@@ -236,7 +237,7 @@ E:\stm32\sensor-node-fw\
 | L2 无 Keil 时的烟测 | 无 Keil 环境或提交前快速自检 | 运行 `powershell -NoProfile -ExecutionPolicy Bypass -File sensor-node-fw\App\tools\smoke_build.ps1`，要求 errors = 0 且链接通过；记录镜像大小。**这是替代手段，不能取代 L1** |
 | L3 工程完整性 | 新增/删除/移动文件、改 include/宏、CubeMX 再生成后 | 运行 `App/tools/apply_qp_to_keil.ps1`，确认输出为“无需修改”或已补齐、`缺失 = 0`，且含中文源文件都已补 BOM |
 | L4 中断审计 | 涉及中断、优先级、时基 | 复核所有 QF-aware 中断抢占优先级 ≥ 3，并核对 `docs_sensor/03-资源分配.md` |
-| L5 硬件在环 | 有板子时，发布/里程碑前 | 串口 115200：可见启动横幅与 `actors` 行、`AT` 回 `OK`、`AT+SN?` 回 `+SN:"<值>"`、1 Hz 采样行与 2 s 心跳行持续出现；涉及参数存储时再验 `AT+SN="<新值>"` → `store: saved ...` → 断电重启后仍是新值；记录实测结果与日期。**可直接用 `App/tools/at_smoke.ps1` 跑（默认只读）**，判读方法见 `docs_sensor/06-协议格式.md#怎么验证` |
+| L5 硬件在环 | 有板子时，发布/里程碑前 | 串口 115200：可见启动横幅与 `actors` 行、`AT` 回 `OK`、`AT+SN?` 回 `+SN:"<值>"`、按 `AT+TRANSINTVL` 采样后发布成功才出现 `cloud> sent`；BLE认证首采也走统一上报事件；BLE `sample_interval` 与 `AT+TRANSINTVL` 共用1~20分钟周期、同批采集发送（用户2026-10-12纠正）；默认无2s心跳，按键保留4G新采样上报并开启120s广播，窗口结束保持连接、断开后停播（用户2026-10-12确认）；涉及参数存储时再验 `AT+SN="<新值>"` → `store: saved ...` → 断电重启后仍是新值；记录实测结果与日期。**可直接用 `App/tools/at_smoke.ps1` 跑（默认只读）**，判读方法见 `docs_sensor/06-协议格式.md#怎么验证` |
 
 硬性禁止：
 

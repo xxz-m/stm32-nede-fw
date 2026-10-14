@@ -120,7 +120,11 @@ void BLE_Component_Init(BleComponent *me, BlePort const *port,
 void BLE_Component_Start(BleComponent *me) {
     if ((me == (BleComponent *)0) || (me->port == (BlePort const *)0) ||
         (me->config == (BleConfig const *)0)) return;
+    me->connected = false; me->authenticated = false; me->tx_count = 0U;
+    me->tx_head = 0U; me->tx_tail = 0U; me->data_sent = false;
     me->state = BLE_COMPONENT_PROBING;
+    me->advert_pending = false; me->advert_enabled = false; me->advert_attempts = 0U;
+    me->advert_retry_ms = me->port->get_tick_ms(me->port->context);
     me->backend_step = 0U;
     me->command_pending = false;
     me->line_len = 0U;
@@ -153,6 +157,7 @@ void BLE_Component_Process(BleComponent *me) {
     }
     count = me->port->read(me->port->context, data, sizeof(data));
     for (i = 0U; i < count; ++i) {
+        if (me->advert_pending) { BLE_Advertising_Consume(me, data[i]); continue; }
         if (me->command_pending) {
             if (me->line_len < (sizeof(me->line) - 1U)) me->line[me->line_len++] = (char)data[i];
             if ((data[i] == (uint8_t)'\r') || (data[i] == (uint8_t)'\n') ||
@@ -181,7 +186,7 @@ void BLE_Component_Process(BleComponent *me) {
                         me->state = BLE_COMPONENT_CONFIGURING;
                         sendBackendStep(me);
                     }
-                } else if (strstr(me->line, "ERROR") != (char *)0) {
+                } else if ((strstr(me->line, "ERROR") != (char *)0) || (strstr(me->line, "+ERP") != (char *)0)) {
                     me->failure = BLE_FAILURE_RESPONSE;
                     me->failure_step = me->backend_step;
                     me->state = BLE_COMPONENT_FAILED;
@@ -229,11 +234,13 @@ void BLE_Component_Process(BleComponent *me) {
             traceConfig(me, BLE_FAILURE_TIMEOUT);
         }
     }
-    if ((me->state == BLE_COMPONENT_READY) && (me->tx_count > 0U)) {
+    BLE_Advertising_Process(me, now);
+    if ((me->state == BLE_COMPONENT_READY) && !me->advert_pending && (me->tx_count > 0U)) {
         char *json = me->tx_queue[me->tx_tail];
         if (BLE_Protocol_SendJson(me, json)) {
             (void)strncpy(me->last_json, json, sizeof(me->last_json) - 1U);
             me->last_json[sizeof(me->last_json) - 1U] = '\0';
+            if (strstr(json, "\"cmd\":\"data\"") != (char *)0) { me->data_sent = true; }
             me->tx_tail = (uint8_t)((me->tx_tail + 1U) % BLE_COMPONENT_TX_DEPTH);
             --me->tx_count;
         }
@@ -286,5 +293,10 @@ bool BLE_Component_IsConnected(BleComponent const *me) {
 }
 
 bool BLE_Component_IsReady(BleComponent const *me) {
-    return BLE_Component_IsConnected(me) && me->authenticated && !me->reboot_pending;
+    return BLE_Component_IsConnected(me) && me->state == BLE_COMPONENT_READY && me->authenticated && !me->reboot_pending;
+}
+
+char const *BLE_Component_TakeSentReport(BleComponent *me) {
+    if (!me->data_sent) { return (char const *)0; }
+    me->data_sent = false; return me->last_json;
 }

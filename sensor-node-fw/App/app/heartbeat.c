@@ -14,7 +14,9 @@
 #include "bsp.h"
 
 /* 本模块在 QP 断言里的名字 */
+#if (APP_CFG_HEARTBEAT_ENABLE != 0)
 Q_DEFINE_THIS_MODULE("heartbeat")
+#endif
 
 /* QP/C 断言钩子（实现在 App/bsp/bsp.c） */
 void Q_onAssert(char const * const module, int loc);
@@ -22,7 +24,9 @@ void Q_onAssert(char const * const module, int loc);
 /* AO 实例与事件队列（队列存储归 AO 自己所有） */
 static Heartbeat l_heartbeat;
 QActive * const AO_Heartbeat = &l_heartbeat.super;
+#if (APP_CFG_HEARTBEAT_ENABLE != 0)
 static QEvt const *l_heartbeatQueueSto[4];
+#endif
 
 /* 心跳周期（QP 节拍数） */
 #define HEARTBEAT_TICKS ((QTimeEvtCtr)(APP_CFG_HEARTBEAT_PERIOD_S * BSP_TICKS_PER_SEC))

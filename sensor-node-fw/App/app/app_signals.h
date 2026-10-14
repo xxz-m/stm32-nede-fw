@@ -29,13 +29,20 @@
 enum AppSignals {
     /* ---------- 全局段 0..31：跨 AO 投递 ---------- */
     GLOBAL_SIG_BASE = Q_USER_SIG,
-    SYS_SENSOR_START_SIG = GLOBAL_SIG_BASE, /* Node -> Sensor：开始周期采样 */
+    SYS_SENSOR_START_SIG = GLOBAL_SIG_BASE, /* App -> Sensor：启用驱动推进 */
     SYS_SENSOR_STOP_SIG,                    /* Node -> Sensor：停止采样     */
     SYS_SENSOR_REPORT_SIG,                  /* Node -> Sensor：立即上报一次 */
     SYS_SENSOR_PERIOD_SIG,                  /* 通信 AO -> Sensor：修改采样周期 */
     SYS_REBOOT_REQUEST_SIG,                 /* 任意命令来源 -> AO_System：请求系统复位
                                              * （串口/4G 都经 App_System_RequestReboot()
                                              *   投递；**只置请求，复位由 AO_System 延时执行**） */
+    SYS_SENSOR_SAMPLE_CLOUD_SIG,            /* 4G -> Sensor：采集后用于云端上报。 */
+    SYS_SENSOR_SAMPLE_BLE_SIG,              /* BLE -> Sensor：采集后用于蓝牙发送。 */
+    SYS_BLE_ADVERT_REQUEST_SIG,             /* 按键业务 -> BLE：开启限时广播。 */
+    SYS_MODEM_SIGNAL_REQUEST_SIG,           /* BLE -> Modem：刷新信号强度。 */
+    SYS_REPORT_REQUEST_SIG,                 /* 所有业务触发 -> Modem：统一采集上报。 */
+    SYS_BLE_SIGNAL_SIG,                     /* Modem -> BLE：信号强度快照。 */
+    SYS_NODE_MEASUREMENT_SIG,               /* Sensor -> Node：寄存器测量快照。 */
     GLOBAL_SIG_END = GLOBAL_SIG_BASE + 32,
 
     /* ---------- AO_Node 段 32..63 ---------- */
@@ -46,7 +53,7 @@ enum AppSignals {
 
     /* ---------- AO_Sensor 段 64..95 ---------- */
     SENSOR_SIG_BASE = NODE_SIG_END,
-    SENSOR_SAMPLE_SIG = SENSOR_SIG_BASE,    /* 1 Hz 采样时间事件            */
+    SENSOR_SAMPLE_SIG = SENSOR_SIG_BASE,    /* 历史采样信号，当前不创建定时器            */
     SENSOR_PROCESS_SIG,                     /* 推进 SCL3300 的非阻塞状态机  */
     SENSOR_SIG_END = SENSOR_SIG_BASE + 32,
 

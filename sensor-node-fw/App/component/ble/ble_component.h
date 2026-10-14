@@ -75,6 +75,13 @@ typedef struct {
     BleComponentState state;
     uint8_t backend_step;
     bool command_pending;
+    bool advert_desired;
+    bool advert_enabled;
+    bool advert_pending;
+    bool advert_sent;
+    uint8_t advert_attempts;
+    uint32_t advert_retry_ms;
+    bool data_sent;
     bool connected;
     bool authenticated;
     bool reboot_pending;
@@ -106,6 +113,10 @@ typedef struct {
 void BLE_Component_Init(BleComponent *, BlePort const *, BleConfig const *, BleParam *, size_t);
 void BLE_Component_Start(BleComponent *);
 void BLE_Component_Process(BleComponent *);
+/** @brief 请求广播开关；已连接时不插入 AT，断开后再执行，避免破坏透传。 */
+void BLE_Component_SetAdvertising(BleComponent *, bool enabled);
+/** @brief 取已交给串口发送队列的一条 data JSON；不代表手机业务确认。 */
+char const *BLE_Component_TakeSentReport(BleComponent *);
 bool BLE_Component_Report(BleComponent *, char const *const *, size_t);
 bool BLE_Component_IsConnected(BleComponent const *);
 bool BLE_Component_IsReady(BleComponent const *);

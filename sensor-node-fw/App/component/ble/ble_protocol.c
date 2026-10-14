@@ -241,8 +241,10 @@ static void handleJson(BleComponent *me, char *json) {
                 else if (strcmp(raw, "false") == 0) next.value.boolean = false;
                 else err = 2;
             } else if (next.type == BLE_VALUE_INT) {
-                long value = strtol(raw, (char **)0, 10);
-                if ((value < param->minimum) || (value > param->maximum)) err = 2;
+                char *end;
+                long value = strtol(raw, &end, 10);
+                /* 整数参数必须完整解析，避免2.5或2abc被静默当作2分钟。 */
+                if (end == raw || *end != '\0' || (value < param->minimum) || (value > param->maximum)) err = 2;
                 else next.value.integer = (int32_t)value;
             } else err = 2;
             if ((err == 0) && (param->changed != (BleParamChanged)0) &&

@@ -40,7 +40,7 @@
 *  NOTE (2026-09-27 由 256 提到 512)：日志缓冲提到 200 之后，最多可能出现约 190 字符的
 *  单条日志（4G 连接诊断那行）。环太小会把一整行拆掉一半、看起来像"固件在截断"，
 *  所以至少要让**一条最长的日志装得下**，并留一点余量。 */
-#define APP_CFG_LOG_TX_RING_SIZE    (512U)
+#define APP_CFG_LOG_TX_RING_SIZE    (1024U)
 /*! 单条日志格式化缓冲大小（字节）。
 *  NOTE (2026-09-27 由 96 提到 200，一次真实的教训)：这个缓冲是 `SVC_Log_Printf()` 里的
 *  栈数组，`vsnprintf` 会**静默截断**超长内容。而 `App/component/modem` 的连接诊断行
@@ -62,6 +62,36 @@
 *  `AT+UUID="CDAB0000-1234-5678-1234-56789ABCDEF0"`（8 + 36 + 1 = 45 字符），
 *  原来的 24 会直接丢弃整行，表现为「指令毫无反应」。 */
 #define APP_CFG_AT_LINE_MAX         (64U)
+
+/* 寄存器协议容量，均包含字符串结束符；请求上限由16次读/6次写决定。 */
+#define APP_CFG_REGISTER_READ_MAX       (16U)
+#define APP_CFG_REGISTER_WRITE_MAX      (6U)
+#define APP_CFG_REGISTER_REQUEST_SIZE   (53U)
+#define APP_CFG_REGISTER_RESPONSE_SIZE  (133U)
+#define APP_CFG_REGISTER_REPORT_MASK    (0x000FU)
+#define APP_CFG_REGISTER_UUID_PREFIX    "CDAB0000-1234-5678-1234-"
+
+/* PB15 外部硬件上拉按键：按下低有效，消抖后请求一次 4G 上报。 */
+#define APP_CFG_BUTTON_ENABLE              (1U)
+#define APP_CFG_BUTTON_DEBOUNCE_MS         (10U)
+
+/* 电池电压：PC1 低有效开关，PC0/ADC1_IN10，10k/10k 分压 -------------------*/
+#define APP_CFG_BATTERY_ENABLE             (1U)
+/* 临时测量开关：1=PC1 持续开漏拉低；测完改回 0，恢复按需开启与高阻释放。 */
+#define APP_CFG_BATTERY_GATE_HOLD_LOW      (0U)
+#define APP_CFG_BATTERY_SETTLE_MS          (5U)
+#define APP_CFG_BATTERY_AVG_COUNT          (4U)
+#define APP_CFG_BATTERY_JOB_TIMEOUT_MS     (800U)
+#define APP_CFG_BATTERY_DIVIDER            (2U)
+#define APP_CFG_BATTERY_MAX_MV             (4500U)
+/*! VREFINT 典型值 1.20 V，仅用于估算；需要精度时用实测值校准此宏。 */
+#define APP_CFG_ADC_VREFINT_MV              (1200U)
+#define APP_CFG_ADC_FULL_SCALE              (4095U)
+#define APP_CFG_ADC_VDDA_MIN_MV             (2400U)
+#define APP_CFG_ADC_VDDA_MAX_MV             (3600U)
+#define APP_CFG_ADC_STABILIZE_MS            (1U)
+#define APP_CFG_ADC_CAL_TIMEOUT_MS          (200U)
+#define APP_CFG_ADC_CONVERSION_TIMEOUT_MS   (100U)
 
 /* 共享 SPI1 与 W25Q32JV（PA5=SCK、PA6=MISO、PA7=MOSI、PA8=Flash CS） --------*/
 /* NOTE (共享)：SPI1 的 DMA1 通道 2/3 只归 BSP 总线管理；传感器片选待确认，不猜引脚。
@@ -128,13 +158,13 @@
 #define APP_CFG_STORE_SCAN_URC_MAX      (8U)
 
 /* 心跳任务 -----------------------------------------------------------------*/
-#define APP_CFG_HEARTBEAT_ENABLE    (1)
+#define APP_CFG_HEARTBEAT_ENABLE    (0)
 /*! 心跳周期（秒） */
 #define APP_CFG_HEARTBEAT_PERIOD_S  (2U)
 
 /* 采样任务 -----------------------------------------------------------------*/
 #define APP_CFG_SENSOR_ENABLE       (1)
-/*! 采样周期（秒） */
+/*! 历史兼容值，当前无固定采样拍；业务周期统一取TRANSINTVL（BLE sample_interval为同一参数的分钟镜像）。 */
 #define APP_CFG_SENSOR_PERIOD_S     (1U)
 /*! 滑动平均窗口长度 */
 #define APP_CFG_SENSOR_MAVG_LEN     (4U)
@@ -170,21 +200,33 @@
 /*! 推进驱动非阻塞状态机的周期（毫秒）。一次采样共 14 帧，每帧分「发起 / 取结果」
  *  两步推进；20 ms 一拍时整次采样约 300 ms 完成，远小于 1 s 采样周期。 */
 #define APP_CFG_SCL3300_PROCESS_PERIOD_MS (20U)
+/*! 单次业务采样含短时滤波与电池转换；不跨分钟累计旧样本。 */
+#define APP_CFG_SENSOR_CYCLE_TIMEOUT_MS (8000U)
 /*! READY 之后放弃整次采样的期限（毫秒）。1 Hz 采样下若跨过两个周期仍未完成，
  *  说明总线或器件异常，直接判超时而不是无限等待。 */
 #define APP_CFG_SCL3300_JOB_TIMEOUT_MS  (1500U)
+/*! 恢复失败后至少等待 1 s，再仅复位传感器，避免持续异常时反复占用 SPI。 */
+#define APP_CFG_SCL3300_RECOVERY_DELAY_MS (1000U)
 /*! 角度输出的换算分母：手册 2.5 节 `Angle [°] = ANG_raw / 2^14 * 90`，
  *  即 2^14 = 16384。换算成 0.01° 标度时用 `ANG_raw * 9000 / 16384`。 */
 #define APP_CFG_SCL3300_ANG_DIV         (16384L)
 /*! 角度的 0.01° 系数：90° / 2^14 * 100 = 9000 / 16384。 */
 #define APP_CFG_SCL3300_ANG_CDEG_NUM    (9000L)
 /*! 温度的换算：手册 6.1.2 节 `T [°C] = TEMP_raw / 18.9 - 273`。
- *  换算成 0.01 °C 标度时用 `TEMP_raw * 10000 / 189 - 27300`。 */
-#define APP_CFG_SCL3300_TEMP_DIV        (189L)
+  *  换算成 0.01 °C 标度时用 `TEMP_raw * 10000 / 1890 - 27300`。 */
+  #define APP_CFG_SCL3300_TEMP_DIV        (1890L)
 #define APP_CFG_SCL3300_TEMP_CC_NUM     (10000L)
 #define APP_CFG_SCL3300_TEMP_CC_OFF     (27300L)
 /*! 上电后自动启动采样（与改造前一致：装配点投递 SYS_SENSOR_START_SIG）。 */
 #define APP_CFG_SCL3300_AUTOSTART       (1U)
+/*! 临时调试输出：打印 SCL3300 SPI 事务（每帧 tx/rx 四字节、WHOAMI、STATUS 与状态迁移）。
+*  NOTE (2026-10-14 现场诊断临时打开)：用户实测每次上报请求都得到
+*   `sensor: sample failed reason=scl3300`；驱动把「数据帧 CRC 不符 / 器件回 RS≠01 /
+*   BSP 事务错」三条路径都收敛成 DRV_ERR_BUS，仅凭失败行无法判断是哪一条，必须看到
+*   失败那一帧的原始字节（rx 首字节低 2 位是 RS、第 4 字节是器件算的 CRC）与
+*   恢复状态名（reading-status / sensor-reinit-pending / status-cleared）。
+*  NOTE (定位完请改回 0U)：本开关逐帧调用阻塞的 BSP_print*，长期开启会拖慢 QV 推进。 */
+#define APP_CFG_SCL3300_TRACE           (0U)
 
 /* 系统动作：延迟复位（AO_System）-------------------------------------------*/
 /*! 重启倒计时的检查周期（毫秒）。每拍只做几次只读判断，代价极低。 */
@@ -250,7 +292,11 @@
 #define APP_CFG_BLE_PROBE_RETRY_MS            (2000U)
 #define APP_CFG_BLE_RESTART_WAIT_MS           (500U)
 #define APP_CFG_BLE_RESTART_PROBE_ATTEMPTS    (6U)
-#define APP_CFG_BLE_REPORT_PERIOD_S           (60U)
+/*! BLE sample_interval与TRANSINTVL共用下方分钟参数，不另设秒级周期。 */
+/*! 按键开启的可连接窗口，再按重新计时；连接本身不强制超时。 */
+#define APP_CFG_BLE_ADVERT_WINDOW_MS          (120000U)
+#define APP_CFG_BLE_ADVERT_RETRY_MS           (1000U)
+#define APP_CFG_BLE_ADVERT_ATTEMPTS           (3U)
 
 /*! 产品身份与小程序配置；通用组件内不得写死这些值。
 *
@@ -347,23 +393,9 @@
 #define APP_CFG_MODEM_CELL_FIELD_SIZE          (12U)
 #define APP_CFG_MODEM_TOKEN_SIZE               (24U)
 
-/*! MQTT 主题前导 `/`：**一条主题一个宏**，取值只能是 `""` 或 `"/"`。 --------------------
-*
-*  NOTE (为什么逐条给，而不是按收发方向，2026-09-28 订正)：平台侧有**两个互不相干的主题
-*   空间**，'/' 的归属由**主题用途**决定，与收/发方向无关：
-*     - **数据上报空间**：属性上报页原文要求设备发布到
-*       `/{productId}/{deviceId}/properties/report`（**带** '/'）——给平台画卡片与折线用；
-*     - **命令/属性交互空间**：平台的「AT 控制主题模板」`{productId}/{deviceId}/command` 与
-*       「回复主题模板」`{productId}/{deviceId}/command/reply`（**都不带** '/'）——命令与它的
-*       回复在**同一格**里闭环。
-*   把它当成"发布方向统一带 '/'"就会给 `command/reply` 多加一个 `/`：`#58`→`#62` 的反复就是
-*   这么来的，实测症状是平台上停在 `MQTT_PUBLISHED · WAITING_RESPONSE`、**20 s 判"指令超时"**
-*   （见 [[08-改动日志]] `#64`）。
-*
-*  NOTE (怎么改)：**平台单独要求哪一条换形态，就改哪一行**，不必碰 `modem_component.c`——
-*   组件里的 `kTopicPrefix[]` 表与这 10 个宏**一一对应**（顺序 = 主题枚举顺序），并有编译期
-*   护栏：每个宏的串长必须 ≤ 1 字符，写成别的直接编译报错。
-*   拼法：`前缀 + <productId>/<deviceId> + 后缀`；后缀在 `kTopicSuffix[]`（自带 device 之后那个 `/`）。 */
+/*! MQTT主题前导斜杠按主题独立配置，当前全部为"/"，与13号新接口一致。
+ * NOTE (历史)：旧平台曾使用不带前导斜杠的命令主题；不得拿历史实测替代新接口验证。
+ * 每个前缀只能为空或"/"，由组件编译期护栏检查；后缀自带device之后的分隔符。 */
 #define APP_CFG_MODEM_TOPIC_PREFIX_REPORT         "/"  /* → /<pid>/<did>/properties/report  数据上报 */
 #define APP_CFG_MODEM_TOPIC_PREFIX_READ           "/"   /* → <pid>/<did>/properties/read     读属性   */
 #define APP_CFG_MODEM_TOPIC_PREFIX_READ_REPLY     "/"   /* → <pid>/<did>/properties/read/reply       */
@@ -374,6 +406,16 @@
 #define APP_CFG_MODEM_TOPIC_PREFIX_STATE_REPLY    "/"   /* → <pid>/<did>/state-check/reply           */
 #define APP_CFG_MODEM_TOPIC_PREFIX_COMMAND        "/"   /* → <pid>/<did>/command             AT 命令  */
 #define APP_CFG_MODEM_TOPIC_PREFIX_COMMAND_REPLY  "/"   /* → <pid>/<did>/command/reply       AT 回复  */
+/*! 本机只订阅 `command` 一条下行通道（2026-10-14 用户决定）。
+*
+*  NOTE (为什么收敛)：现场实测订阅到**第 2 条**（`properties/write`）之后连接就被 broker
+*   掐断，其后所有订阅与发布一律 `+CME ERROR:8002`（见 [[08-改动日志]] `#138` 的完整日志：
+*   第 1 条 `properties/read` 拿到 `+MQTTSUBACK`，第 2 条起再无应答）。而本工程对云端
+*   只暴露 `command` 一条下行通道，读/写/调用/状态检查四条属旧物模型、平台未开放。
+*   收敛之后「订阅是否成功」这条判据也干净了：只剩一条，日志里就是 `topic 1/1`。
+*  NOTE (置 0 即恢复)：值为 0 时订全部 5 条下行主题（read/write/invoke/state/command）。
+*   主题名、方向、发布路径都不受本开关影响——它只决定**给哪些主题分配订阅序号**。 */
+#define APP_CFG_MODEM_TOPIC_SUBSCRIBE_COMMAND_ONLY  (1U)
 /*! 云端 AT 命令下行（平台规则 3.2 的 `command` 主题）的字段缓冲。
 *
 *  NOTE (command 为什么不是平台允许的 256)：本设备 AT 行的上限是 `APP_CFG_AT_LINE_MAX`（64），
@@ -548,6 +590,20 @@
 *    （含大小写），否则本设备订的主题平台不认——同样是"订阅成功但没反应"。 */
 #define APP_CFG_MODEM_USERNAME                 "jetlinks0621"
 #define APP_CFG_MODEM_PASSWORD                 "jetlinks0621"
-#define APP_CFG_MODEM_KEEP_ALIVE_S             (60U)
+/*! MQTT 保活间隔（秒）。平台侧判「设备没了」的窗口是 1.5 × 本值。
+*
+*  NOTE (2026-10-14 由 60 提到 300，现场实测推动)：原值 60 s **小于上报周期**（出厂默认
+*   20 分钟、现场常设 1~2 分钟），于是两次上报之间完全靠模组的 `PINGREQ/PINGRESP`
+*   保活。而 NB-IoT 上长连接 + 频繁 ping 恰恰最脆弱：实测日志里发布成功 61 s 后出现
+*   `4g-core: +MQTTTO:5`（MN316 MQTT 用户手册 §2.9/§2.11：type=5 = ping 超时，
+*   PINGREQ 没等到 PINGRESP），随后 broker 在「最后收到报文 + 1.5×60 s」把设备判离线
+*   （用户在云平台上看到掉线）。
+*  NOTE (取值理由)：300 s 大于任何允许的上报周期上限之外的空窗——只要在
+*   `APP_CFG_MODEM_TRANS_INTERVAL_MAX`（20 分钟）以内定期上报，数据报文自己就保住了
+*   会话，不必依赖 ping；broker 容忍度同时从 90 s 提到 7.5 分钟。
+*   上限提醒：本值越大，平台发现「设备真的掉线」越晚。
+*  NOTE (配套的另一半)：会话真的没了时，靠组件新增的**在线期会话复核**把链路判死并
+*   整条重建（重建即重新订阅全部主题），见 `#138`。 */
+#define APP_CFG_MODEM_KEEP_ALIVE_S             (300U)
 
 #endif /* APP_CONFIG_H */

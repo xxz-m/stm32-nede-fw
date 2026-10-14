@@ -26,14 +26,20 @@
 
 #include "qpc.h"
 #include "svc_at.h"
+#include "app_register.h"
+
+/*! 采样结果按值发送，串口AO独立持有寄存器快照。 */
+typedef struct { QEvt super; AppRegisterSnapshot snapshot; } NodeMeasurementEvt;
 
 /* Node 活动对象 ------------------------------------------------------------*/
 typedef struct {
     QActive  super;   /* 基类，必须放在首位        */
     QTimeEvt timeEvt; /* 预留：本 AO 当前不用周期事件 */
     SvcAt    at;      /* AT 指令解析状态（Service 层，状态由 AO 持有） */
+    AppRegisterSnapshot registers;
     char     lineBuf[SVC_AT_LINE_MAX + 1U]; /* 控制台行缓冲：整行判定用（见 06-协议格式） */
     uint8_t  lineLen; /* 行缓冲中已存字节数 */
+    bool lineOverflow; /* 超长整行拒绝，不能执行截断后的前缀。 */
     uint32_t seq;     /* 预留计数                  */
     uint32_t cmds;    /* 已处理的接收字节数        */
 } Node;

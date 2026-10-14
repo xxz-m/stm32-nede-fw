@@ -25,14 +25,14 @@
 * @brief 构造并启动本应用的全部活动对象。
 */
 void App_start(void) {
-#if (APP_CFG_MODEM_ENABLE != 0) || (APP_CFG_BLE_ENABLE != 0)
     /* NOTE (单池)：QF 要求事件池按 evtSize **严格递增**注册（Qpc/platform/src/
     * qf_dyn.c:119 的 Q_REQUIRE_ID(201) 比较的是上一个池的实际块大小，不是"大于等于"），
-    * 而 BleMeasurementEvt 与 ModemMeasurementEvt 的字段完全一致、尺寸相同，
-    * 注册两个池必然命中断言 201。因此只注册一个池：Q_NEW 默认从 0 号池分配，
-    * 两种事件共用它。池元素取两者的并集，以后任一事件变大也不用再动顺序。
-    * 容量 16 = BLE 8 + Modem 8，两者各自最多同时持有 8 个快照。 */
+    * 测量事件过去尺寸相同，注册多个池会命中断言201。Node、BLE、Modem共用
+    * 一个按并集最大尺寸分配的池，Q_NEW自动选择足够大的块；增加加速度字段
+    * 或关闭通信功能时，Node快照也有可用的池。
+    * 容量16同时服务测量和CSQ事件；结果按值交接，禁止跨AO共享可变快照。 */
     typedef union {
+        NodeMeasurementEvt node;
 #if (APP_CFG_BLE_ENABLE != 0)
         BleMeasurementEvt ble;
 #endif
@@ -42,7 +42,6 @@ void App_start(void) {
     } MeasurementEvtPool;
     static QF_MPOOL_EL(MeasurementEvtPool) measurementPool[16];
     QF_poolInit(measurementPool, sizeof(measurementPool), sizeof(MeasurementEvtPool));
-#endif
     /* 接线：把「串口收到字节」的回调注册给 BSP。
     * 这样 BSP 不需要包含任何 App 头文件，也不需要认识 AO（依赖单向向下）。
     */
@@ -92,7 +91,10 @@ void App_start(void) {
     * NOTE (维护)：新增/删除 AO 时在这里追加一段，并同步 docs_sensor/04-任务调度.md
     * 的「AO 一览」。分段打印（BSP_print 不带换行）是为了避免 #if 嵌套导致
     * 组合数爆炸——原先四个分支的写法每加一个 AO 就要翻倍。 */
-    BSP_print("actors : node p1 | sensor p2 | heartbeat p3");
+    BSP_print("actors : node p1 | sensor p2");
+#if APP_CFG_HEARTBEAT_ENABLE != 0U
+    BSP_print(" | heartbeat p3");
+#endif
 #if (APP_CFG_BLE_ENABLE != 0)
     BSP_print(" | ble p4");
 #endif
@@ -107,12 +109,16 @@ void App_start(void) {
     BSP_printLine("");
     BSP_printLine("boot ok");
 
-    /* 采样任务上电即常开（1 Hz 自动上报）。
+    /* 采样驱动上电即推进，实际采样由通信业务请求触发。
     * NOTE (设计)：调试串口只走 AT 指令，不再有 s/x/d 单字符命令，
-    * 采样因此不需要外部触发，装配时直接送一次开始采样请求。
+    * 装配只启用驱动推进；采样由Modem/BLE业务周期通过事件请求。
     */
+ #if (APP_CFG_SCL3300_AUTOSTART != 0)
     {
         static QEvt const sensorStartEvt = { (QSignal)SYS_SENSOR_START_SIG, 0U, 0U };
         (void)QACTIVE_POST_X(AO_Sensor, &sensorStartEvt, 0U, 0U);
     }
+ #else
+    BSP_printLine("sensor> autostart disabled");
+ #endif
 }

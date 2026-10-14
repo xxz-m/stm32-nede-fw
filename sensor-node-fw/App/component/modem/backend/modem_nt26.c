@@ -490,7 +490,10 @@ ModemBackend const Modem_Nt26_Backend = {
      * 要补齐得先确认该固件用哪条指令取经纬度（可能是 +LBS 主动上报或某条查询），
      * 再照 ml307cLocationBuild/Apply 的样子实现，切勿照抄 ML307C 的 AT+LBS。 */
     (bool (*)(ModemComponent *, char *, size_t))0,
-    (bool (*)(ModemComponent *))0
+    (bool (*)(ModemComponent *))0,
+    /* NOTE (会话健康通知未实现)：NT26 的 MQTT 会话类 URC 未在本工程上板核对过。 */
+    (ModemSessionNotice (*)(char const *))0,
+    (int32_t (*)(char const *))0
 };
 
 #endif /* MODEM_COMPONENT_BACKEND == MODEM_BACKEND_NT26 */

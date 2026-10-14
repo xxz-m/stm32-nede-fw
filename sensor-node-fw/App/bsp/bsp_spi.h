@@ -18,7 +18,7 @@ typedef struct {
     uint16_t divider;     /*!< APB2 时钟分频：2、4、8、16、32、64、128、256 */
 } BspSpiConfig;
 
-/** @brief 初始化 SPI1 与已确认的 Flash CS；不配置未知传感器片选。 */
+/** @brief 初始化 SPI1，登记 Flash 与 SCL3300 的片选、模式和分频，不发送器件命令。 */
 bsp_status_t BSP_spiInit(void);
 /** @brief 注册设备配置；只能空闲时调用，拒绝重复 CS 和 SPI 总线引脚。 */
 bsp_status_t BSP_spiDeviceConfigure(BspSpiDevice device, BspSpiConfig const *config);
@@ -27,7 +27,10 @@ bsp_status_t BSP_spiDeviceConfigure(BspSpiDevice device, BspSpiConfig const *con
  */
 bsp_status_t BSP_spiTransferStart(BspSpiDevice device, uint8_t const *tx,
                                  uint8_t *rx, uint16_t length);
-/** @brief 检查 DMA 完成/错误/期限；不等待硬件，无中断和回调。 */
+/** @brief 检查 DMA 完成/错误/期限；不等待硬件，无中断和回调。
+ * NOTE (两步完成)：本函数停止已完成的 DMA 并拉高 CS，但仍保留设备所有权；
+ * 必须由原设备调用 BSP_spiResult() 取走结果，下一笔事务才能开始。
+ */
 void BSP_spiProcess(void);
 /** @brief 取结果并释放所有权；未完成或非所有者返回 false，不会吞掉别人的结果。 */
 bool BSP_spiResult(BspSpiDevice device, bsp_status_t *result);

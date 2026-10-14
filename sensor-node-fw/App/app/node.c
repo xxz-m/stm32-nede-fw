@@ -63,10 +63,10 @@ static QEvt const l_rxByteEvt = { (QSignal)NODE_RX_BYTE_SIG, 0U, 0U };
 /**
 * @brief 把 1 个可打印字符追加进行缓冲（超出上限的部分丢弃）。 */
 static void linePut(Node * const me, uint8_t b) {
-    if (me->lineLen < (uint8_t)SVC_AT_LINE_MAX) {
+    if (me->lineLen < (uint8_t)(SVC_AT_LINE_MAX - 1U)) {
         me->lineBuf[me->lineLen] = (char)b;
         ++me->lineLen;
-    }
+    } else { me->lineOverflow = true; }
 }
 
 /*..........................................................................*/
@@ -96,7 +96,7 @@ static bool replyText(char *resp, size_t cap, char const *text) {
  *   `App/app/command_dispatch.c`；新增命令请改那里，**不要在本文件加 case**
  *   （协议表见 docs_sensor/06-协议格式.md）。
  */
-static bool executeCommand(SvcAtCmd const *cmd,
+static bool executeCommand(Node const *me, SvcAtCmd const *cmd,
                            char *resp,
                            size_t cap) {
     AppCommandRequest request;
@@ -112,7 +112,8 @@ static bool executeCommand(SvcAtCmd const *cmd,
     request.command = *cmd;
     request.has_correlation = false;
 
-    if (!App_Command_Dispatch(&request, &result)) {
+    if (!App_Register_Dispatch(&request, &me->registers, &result) &&
+        !App_Command_Dispatch(&request, &result)) {
         return false;
     }
 
@@ -135,16 +136,23 @@ static bool atHandleLine(Node * const me, uint8_t term) {
     SvcAtCmd cmd;
     uint8_t i;
 
+    if (me->lineOverflow) {
+        me->lineOverflow = false; me->lineLen = 0U;
+        SVC_At_Init(&me->at);
+        LOG_WRITE("ERROR\r\n");
+        return true;
+    }
+
     for (i = 0U; i < me->lineLen; ++i) {
         if (SVC_At_Feed(&me->at, (uint8_t)me->lineBuf[i], &cmd) &&
-            executeCommand(&cmd, resp, sizeof(resp))) {
+            executeCommand(me, &cmd, resp, sizeof(resp))) {
             LOG_WRITE(resp);
             handled = true;
         }
     }
 
     if (SVC_At_Feed(&me->at, term, &cmd) &&
-        executeCommand(&cmd, resp, sizeof(resp))) {
+        executeCommand(me, &cmd, resp, sizeof(resp))) {
         LOG_WRITE(resp);
         handled = true;
     }
@@ -175,6 +183,7 @@ static void handleByte(Node * const me, uint8_t b) {
         return;
     }
 
+    me->lineOverflow = true;
     LOG_WRITE("ERROR\r\n");
 }
 
@@ -214,6 +223,7 @@ QState Node_state_Active(Node * const me, QEvt const * const e) {
             BSP_printLine("params : AT+SN? read | AT+SN=\"<v>\" write | AT+SN=? max len");
             BSP_printLine("names  : SN PIN UUID DEVNAME MODEL BATCH (BLE adv name = SN)");
             BSP_printLine("biz    : AT+TRANSINTVL? read | AT+TRANSINTVL=<1..20> min (saved)");
+            BSP_printLine("regs   : AT+READ=\"addr,...,CRC\" | AT+WRITE=\"addr,value,...,CRC\"");
             BSP_printLine("store  : AT+CMD? | AT+VER? | AT+CFG? status | AT&F defaults | AT+I2C? scan");
             BSP_printLine("system : AT+RST | AT+REBOOT (reply OK first, then reset)");
 					
@@ -229,6 +239,10 @@ QState Node_state_Active(Node * const me, QEvt const * const e) {
             }
             break;
         }
+        case SYS_NODE_MEASUREMENT_SIG:
+            me->registers = ((NodeMeasurementEvt const *)e)->snapshot;
+            status = Q_HANDLED();
+            break;
         default: {
             status = Q_SUPER(&QHsm_top);
             break;
@@ -256,7 +270,9 @@ void Node_ctor(void) {
     /* 说明：本 AO 不再使用周期时间事件——1 Hz/2 s 心跳输出由独立的 AO_Heartbeat
      * 负责，Node 只做 AT 通道与接收抽干（见 05-任务说明.md）。 */
     SVC_At_Init(&me->at);   /* AT 解析状态（Service 层，状态由本 AO 持有） */
+    (void)memset(&me->registers, 0, sizeof(me->registers));
     me->lineLen = 0U;       /* 控制台行缓冲清零 */
+    me->lineOverflow = false;
     me->seq  = 0U;
     me->cmds = 0U;
 }

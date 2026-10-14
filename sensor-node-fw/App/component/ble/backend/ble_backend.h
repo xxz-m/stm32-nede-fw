@@ -9,6 +9,9 @@
 char const *BLE_Backend_Command(BleConfig const *config, uint8_t step,
                                 char *buffer, size_t capacity);
 uint8_t BLE_Backend_CommandCount(void);
+char const *BLE_Backend_AdvertisingCommand(bool enabled);
+void BLE_Advertising_Process(BleComponent *me, uint32_t now);
+void BLE_Advertising_Consume(BleComponent *me, uint8_t byte);
 bool BLE_Backend_LineConnected(char const *line);
 bool BLE_Backend_LineDisconnected(char const *line);
 void BLE_Backend_ParseLine(BleComponent *component, char const *line);

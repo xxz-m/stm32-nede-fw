@@ -17,8 +17,16 @@ typedef struct {
     int32_t angle_x_cdeg;     /* X 轴倾角，0.01°   */
     int32_t angle_y_cdeg;     /* Y 轴倾角，0.01°   */
     int32_t angle_z_cdeg;     /* Z 轴倾角，0.01°   */
+    int32_t acc_mg[3];        /* 三轴加速度，毫g，仅用于寄存器读取。 */
+    uint16_t battery_mV;      /* 电池电压，毫伏；有效性必须同时检查。 */
+    bool battery_valid;      /* false 时不得上传旧值或零值占位。 */
+    bool valid;              /* false 为本轮采样失败，不得发送历史值。 */
+    bool cloud_requested;    /* 统一采集批次用于云端上报。 */
 } ModemMeasurementEvt;
 
+/** @brief 所有来源请求同一采集上报事件；true仅表示入队，忙时合并。 */
+bool Modem_RequestReport(void);
+void Modem_RequestSignal(void);
 void Modem_ctor(void);
 void Modem_start(void);
 void Modem_uartRxIsrSink(void);

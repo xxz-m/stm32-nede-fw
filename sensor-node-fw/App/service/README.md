@@ -1,4 +1,13 @@
+---
+title: 服务层规范
+status: 进行中
+owner: 设备端
+updated: 2026-10-14
+---
+
 # 服务层（Service）
+
+更新：2026-10-14。`svc_register.c/h` 新增可移植寄存器ASCII负载解析、CRC与逐地址结果编码，通过调用方注入read/write端口访问数据，不依赖App/QP/硬件。映射和串口/云端封装由App持有；请求先整帧校验再执行，最多读16项/写6对。怎么验证：`powershell -NoProfile -ExecutionPolicy Bypass -File sensor-node-fw/App/tools/register_test.ps1`，当前能力详见 `docs_sensor/06-协议格式.md`。
 
 层次位置：**App 应用层 → Service 服务层 → Driver 器件驱动层 → BSP → HAL/CMSIS**
 
